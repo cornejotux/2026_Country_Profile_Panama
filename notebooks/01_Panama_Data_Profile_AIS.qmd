@@ -1,0 +1,1355 @@
+---
+title: "Explorando datos de Panamá con gfwR"
+author: Jorge F. Cornejo-Donoso
+date: last-modified
+date-format: "MMMM DD, YYYY"
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    lof: true
+    lot: true
+  pdf: 
+    toc: true
+    toc-depth: 3
+    lof: true
+    lot: true
+    geometry: "left=3cm,right=3cm,top=2cm,bottom=2cm"
+    number-sections: true
+    fontfamily: roboto
+    prefer-html: true
+execute:
+  cache: TRUE
+  cache.lazy: TRUE
+  dev: "ragg_png"
+  dpi: 300
+knitr:
+   opts_chunk: 
+     dev: "ragg_png"
+     echo: FALSE
+     warning: FALSE
+     message: FALSE
+     cache: TRUE
+     cache.lazy: TRUE
+     fig.align: 'center'
+     fig.width: 7
+     fig.height: 4.2
+     out.width: "100%"
+     #fig.dpi: 600
+     fig.pos: "H"
+
+---
+
+```{r setup, results='hide', cache=FALSE}
+#| message: false
+#| warning: false
+#| paged-print: true
+require(ggplot2)
+require(dplyr)
+library(tidyr)
+library(fishwatchr)
+library(lubridate)
+library(gfwr)
+library(progress)
+library(bigrquery)
+library(sf)
+library(countrycode)
+library(viridis)
+
+options(scipen=999, 
+        digits = 6,
+        scales.big.mark = ".",
+        scales.decimal.mark = ","
+        )
+
+Sys.setlocale("LC_TIME", "es_ES.UTF-8") 
+```
+
+```{r cache=FALSE}
+std_base_size <- 9
+std_plot_margin <- margin(3, 3, 3, 3, unit = "pt")
+
+gfwT <- theme_gfw() +
+  theme(
+    text = element_text(size = std_base_size),
+    axis.title = element_text(size = std_base_size),
+    axis.title.x = element_text(margin = margin(t = 4, unit = "pt")),
+    axis.title.y = element_text(margin = margin(r = 4, unit = "pt")),
+    axis.text = element_text(size = std_base_size),
+    axis.text.x = element_text(size = std_base_size, hjust = 1, angle = 45),
+    axis.text.y = element_text(size = std_base_size),
+    axis.ticks.y = element_line(color = "white"),
+    strip.text = element_text(size = std_base_size, face = "bold"),
+    legend.position = "right",
+    legend.title = element_text(size = std_base_size),
+    legend.text = element_text(size = std_base_size),
+    legend.key.width = unit(0.5, "cm"),
+    legend.key.height = unit(0.5, "cm"),
+    plot.title = element_text(size = std_base_size + 1, face = "bold", hjust = 0.5, margin = margin(b = 4, unit = "pt")),
+    plot.subtitle = element_text(size = std_base_size, margin = margin(b = 4, unit = "pt")),
+    plot.caption = element_text(size = std_base_size - 1, margin = margin(t = 4, unit = "pt")),
+    plot.margin = std_plot_margin,
+    panel.spacing.x = unit(0.08, "lines"),
+    panel.spacing.y = unit(0.08, "lines")
+  )
+
+theme_set(gfwT)
+
+xlimites = c(-85, -76)
+ylimites = c(4, 13)
+
+```
+
+# Mapa Base
+
+EEZs
+
+```{r eval=F}
+project_id <- "world-fishing-827"
+
+sql <- "
+SELECT MRGID, GEONAME, wkt
+FROM `world-fishing-827.ocean_shapefiles_all_purpose.marine_regions_v11`
+WHERE MRGID IN (8423)
+"
+tb <- bq_project_query(project_id, sql)
+df <- bq_table_download(tb)
+zee_sf <- st_as_sf(df, wkt = "wkt", crs = 4326)
+#print(zee_sf)
+#plot(st_geometry(zee_sf))
+save(zee_sf, file="../data/eezs.rda")
+```
+
+
+
+```{r}
+load(file="../data/eezs.rda")
+
+amp_panama <- st_read(
+  "../data/panama_amp_zee/panama_amp_within_eez.gpkg",
+  layer = "panama_amp_within_eez"
+)
+
+gfw_map(theme = "dark", res = 10, eezs = TRUE) +
+  geom_sf(data = zee_sf, fill = gfw_palettes$primary[2], alpha = .3) +
+  geom_sf(data = amp_panama, col = gfw_palettes$primary[1], fill = gfw_palettes$primary[1], alpha = .3) +
+  coord_sf(
+    xlim = xlimites,
+    ylim = ylimites,
+    crs = 4326,
+    expand = FALSE
+  ) +
+  scale_x_continuous(
+    name = "Longitud",
+    breaks = seq(min(xlimites), max(xlimites), by = 2)
+  ) +
+  scale_y_continuous(
+    name = "Latitud",
+    breaks = seq(min(ylimites), max(ylimites), by = 2)
+  ) +
+  theme(
+    axis.title = element_text(size = 10),
+    axis.text = element_text(size = 9),
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    legend.position = "right"
+  )
+```
+
+
+# AIS
+
+## Obtencion de los datos
+
+### Presencia
+
+```{r eval=F}
+#eezIds <- distinct(rbind(gfw_region_id("Ecuador") , gfw_region_id("Galapagos")))
+eezIds <- distinct(gfw_region_id("Panama")) 
+
+## Hago un loop para obtener los datos en cada una de las id
+years <- 2012:2026
+n_years <- length(years)
+n_eez <- length(eezIds$id)
+
+pbA <- progress_bar$new(
+  format = "Procesando Year [:bar] :current/:total (:percent) | ETA: :eta",
+  total = n_years,
+  clear = FALSE,
+  width = 60
+)
+
+data_list <- vector("list", n_years)  # más eficiente que rbind en cada iteración
+
+for (yi in seq_along(years)) {
+
+  y <- years[yi]
+  pbA$tick()
+
+  pb <- progress_bar$new(
+    format = paste0("EEZ ", y, " [:bar] :current/:total (:percent) | ETA: :eta"),
+    total = n_eez,
+    clear = FALSE,
+    width = 60
+  )
+
+  eez_list <- vector("list", n_eez)
+
+  for (j in seq_along(eezIds$id)) {
+    pb$tick()
+
+    data <- gfw_ais_presence(
+      spatial_resolution = "HIGH",
+      temporal_resolution = "YEARLY",
+      group_by = "VESSEL_ID",
+      start_date = sprintf("%d-01-01", y),
+      end_date   = sprintf("%d-01-01", y + 1),
+      region = eezIds$id[j],
+      region_source = "EEZ"
+    )
+
+    data$year  <- y
+    data$id    <- eezIds$id[j]
+    data$label <- eezIds$label[j]
+
+    eez_list[[j]] <- data
+  }
+
+  data_list[[yi]] <- do.call(rbind, eez_list)
+}
+
+dataAllEEZ <- do.call(rbind, data_list)
+
+save(dataAllEEZ, file="../data/presencia_panama.rds")
+```
+
+### Esfuerzo de pesca
+
+```{r eval=F}
+
+pbA <- progress_bar$new(
+  format = "Procesando Year [:bar] :current/:total (:percent) | ETA: :eta",
+  total = n_years,
+  clear = FALSE,
+  width = 60
+)
+
+data_list <- vector("list", n_years)  # más eficiente que rbind en cada iteración
+
+for (yi in seq_along(years)) {
+  y <- years[yi]
+  pbA$tick()
+  pb <- progress_bar$new(
+    format = paste0("EEZ ", y, " [:bar] :current/:total (:percent) | ETA: :eta"),
+    total = n_eez,
+    clear = FALSE,
+    width = 60
+  )
+
+  eez_list <- vector("list", n_eez)
+  for (j in seq_along(eezIds$id)) {
+    pb$tick()
+
+    data <- gfw_ais_fishing_hours(
+      spatial_resolution = "HIGH",
+      temporal_resolution = "MONTHLY",
+      group_by = "VESSEL_ID",
+      start_date = sprintf("%d-01-01", y),
+      end_date   = sprintf("%d-01-01", y + 1),
+      region = eezIds$id[j],
+      region_source = "EEZ"
+    )
+
+    data$year  <- y
+    data$id    <- eezIds$id[j]
+    data$label <- eezIds$label[j]
+
+    eez_list[[j]] <- data
+  }
+
+  data_list[[yi]] <- do.call(rbind, eez_list)
+  Sys.sleep(10)
+}
+
+dataAllEEZ_fh <- do.call(rbind, data_list)
+
+save(dataAllEEZ_fh, file="../data/fishing_efort_panama.rds")
+
+```
+
+### SAR vessel detections
+
+```{r eval=F}
+pbA <- progress_bar$new(
+  format = "Procesando Year [:bar] :current/:total (:percent) | ETA: :eta",
+  total = n_years,
+  clear = FALSE,
+  width = 60
+)
+
+data_list <- vector("list", n_years)  # más eficiente que rbind en cada iteración
+
+for (yi in seq_along(years)) {
+  y <- years[yi]
+  pbA$tick()
+  pb <- progress_bar$new(
+    format = paste0("EEZ ", y, " [:bar] :current/:total (:percent) | ETA: :eta"),
+    total = n_eez,
+    clear = FALSE,
+    width = 60
+  )
+
+  eez_list <- vector("list", n_eez)
+  for (j in seq_along(eezIds$id)) {
+    pb$tick()
+
+    data <- gfw_sar_vessel_detections(
+      spatial_resolution = "HIGH",
+      temporal_resolution = "YEARLY",
+      group_by = "VESSEL_ID",
+      start_date = sprintf("%d-01-01", y),
+      end_date   = sprintf("%d-01-01", y + 1),
+      region = eezIds$id[j],
+      region_source = "EEZ"
+    )
+
+    data$year  <- y
+    data$id    <- eezIds$id[j]
+    data$label <- eezIds$label[j]
+
+    eez_list[[j]] <- data
+  }
+
+  data_list[[yi]] <- do.call(rbind, eez_list)
+  Sys.sleep(10)
+}
+
+dataAllEEZ_sar <- do.call(rbind, data_list)
+
+save(dataAllEEZ_sar, file="../data/sar_vesdet_panama.rds")
+
+```
+
+
+## Presentacion de los datos
+
+### Número de barcos por años y pais
+
+#### Presencia
+
+```{r}
+## Cargo los datos
+load(file = "../data/fishing_efort_panama.rds") 
+dataAllEEZ_fh <- dataAllEEZ_fh %>% 
+            filter(id %in% c(8423),
+                   year != 2026)
+load(file = "../data/presencia_panama.rds")
+dataAllEEZ <- dataAllEEZ %>% 
+            filter(id %in% c(8423),
+                   year != 2026)
+
+load(file = "../data/sar_vesdet_panama.rds")
+dataAllEEZ_sar <- dataAllEEZ_sar %>% 
+            filter(id %in% c(8423),
+                   year != 2026)
+
+
+```
+
+# Informacion descriptiva de la flota
+
+## Presencia
+
+Primero vamos a obtener el listado de barcos y luego vamos a sacar su informacion
+de tamaño para describir como es esta flota.
+
+
+```{r eval=F}
+barcos <- unique(dataAllEEZ$`Vessel ID`)
+barcos <- barcos[!is.na(barcos) & barcos != ""]
+
+# Tamaño de lote: prueba 50–200. Si sigue fallando, baja a 25 o 50.
+chunk_size <- 100
+chunks <- split(barcos, ceiling(seq_along(barcos) / chunk_size))
+
+info_list <- purrr::map(chunks, \(ids_chunk) {
+  gfw_vessel_info(
+    search_type = "id",
+    ids = ids_chunk,
+    quiet = TRUE
+  )
+})
+
+registryInfo_all <- bind_rows(purrr::map(info_list, "registryInfo"))
+combinedSources_all <- bind_rows(purrr::map(info_list, "combinedSourcesInfo"))
+
+save(registryInfo_all, file="../data/registryInfo_all.rda")
+save(combinedSources_all, file="../data/combinedSources_all.rda")
+```
+
+```{r}
+load(file="../data/registryInfo_all.rda")
+load(file="../data/combinedSources_all.rda")
+```
+
+Grafico de tamaños por tipo
+
+
+```{r}
+
+tipos_pesca <- c(
+  "TUNA_PURSE_SEINES", "DRIFTING_LONGLINES", "TRAWLERS",
+  "PURSE_SEINES", "FISHING", "SET_LONGLINES",
+  "OTHER_FISHING", "POLE_AND_LINE", "SQUID_JIGGER",
+  "FISH_FACTORY", "DREDGE_FISHING",
+  "POTS_AND_TRAPS", "WELL_BOAT"
+)
+
+df <- registryInfo_all %>%
+  mutate(
+    es_pesquero = if_else(geartypes %in% tipos_pesca, TRUE, FALSE, missing = NA)
+  )
+
+df <- df %>%
+  mutate(
+    tipo_barco_simple = case_when(
+      geartypes %in% tipos_pesca ~ "Pesquero",
+      geartypes %in% c("CARGO", "CARGO_OR_REEFER", "CARGO_OR_TANKER") ~ "Carga",
+      geartypes %in% c("TANKER", "BUNKER", "BUNKER_OR_TANKER") ~ "Tanquero",
+      geartypes %in% c("REEFER", "SPECIALIZED_REEFER", "CONTAINER_REEFER") ~ "Frigorífico",
+      geartypes == "PASSENGER" ~ "Pasajeros",
+      geartypes %in% c("TUG", "SUPPLY_VESSEL", "DIVE_VESSEL") ~ "Servicio",
+      geartypes %in% c("PATROL_VESSEL", "RESEARCH", "SEISMIC_VESSEL") ~ "Investigación/Patrulla",
+      geartypes %in% c("DREDGE_NON_FISHING", "NON_FISHING", "OTHER_NOT_FISHING") ~ "No pesquero",
+      is.na(geartypes) ~ NA_character_,
+      TRUE ~ "Otros"
+    )
+  )
+
+colores_barco <- c(
+  "Pesquero" = "#1b9e77",
+  "Carga" = "#d95f02",
+  "Tanquero" = "#7570b3",
+  "Frigorífico" = "#e7298a",
+  "Pasajeros" = "#66a61e",
+  "Servicio" = "#e6ab02",
+  "Investigación/Patrulla" = "#a6761d",
+  "No pesquero" = "#666666",
+  "Otros" = "#1f78b4"
+)
+
+ggplot(df, aes(x = lengthM, y = tonnageGt, color = tipo_barco_simple)) +
+  geom_point() +
+  scale_color_manual(values = colores_barco) +
+  labs(
+    x = "Eslora (m)",
+    y = "Tonelaje bruto (GT)",
+    color = "Tipo de barco"
+  )
+```
+
+Ahora solo los barcos Ecuatorianos
+
+```{r}
+df_ecu <- df %>% 
+            filter(flag == "PAN", 
+                   !is.na(lengthM))
+ggplot(df_ecu, aes(x = lengthM, y = tonnageGt, color = tipo_barco_simple)) +
+  geom_point() +
+   scale_color_manual(values = colores_barco) +
+  labs(
+    x = "Eslora (m)",
+    y = "Tonelaje bruto (GT)",
+    color = "Tipo de barco"
+  )
+```
+
+Ahora hagamos un histograma para los largos y otro para la capacidad de bodega
+
+```{r}
+df <- df %>% 
+          mutate(nacional = if_else(flag == "PAN", "Panamá", "Internacional"))
+ggplot(df, aes(x = lengthM, fill = nacional)) +
+  geom_histogram(position = "identity", alpha = 0.6, bins = 30) +
+  scale_fill_manual(values = c(
+    "Panamá" = gfw_palettes$primary[1],
+    "Internacional" = gfw_palettes$primary[2]
+  )) +
+  labs(x = "Eslora (m)", y = "Número de barcos", fill = "Flota")
+```
+
+
+##### Por tipo de barco
+
+```{r}
+temp <- dataAllEEZ %>% 
+  filter(id %in% c(8423)) %>% 
+  group_by(`Vessel ID`, `Vessel Type`, label) %>% 
+  summarise(n = n()) %>% 
+  group_by(`Vessel Type`, label) %>% 
+  summarise(n = n()) %>% 
+  pivot_wider(
+    names_from = label,
+    values_from = n
+  ) %>% 
+  arrange(desc(Panama))
+
+kableExtra::kable(temp,
+  format.args = list(
+    big.mark = ".",
+    scientific = FALSE
+  )
+)
+```
+
+
+##### Por Pais
+
+```{r}
+temp_year <- dataAllEEZ %>% 
+  filter(id %in% c(8423)) %>% 
+  mutate(year = as.numeric(year)) %>%   # asegurar que sea numérico
+  group_by(`Vessel ID`, Flag, year) %>% 
+  summarise(n = n(), .groups = "drop") %>% 
+  group_by(Flag, year) %>% 
+  summarise(n = n(), .groups = "drop") %>% 
+  arrange(year) %>% 
+  pivot_wider(
+    names_from = year,          # si quieres que las columnas sean los años
+    values_from = n,
+    values_fill = 0            # rellenar NA con vacío
+  ) %>% 
+  select(Flag, sort(names(.)[-1]))  # ordenar columnas numéricamente
+
+temp_total <- dataAllEEZ %>% 
+  filter(id %in% c(8423)) %>% 
+  mutate(year = as.numeric(year)) %>%   # asegurar que sea numérico
+  group_by(`Vessel ID`, Flag) %>% 
+  summarise(n = n(), .groups = "drop") %>% 
+  group_by(Flag) %>% 
+  summarise(total = n(), .groups = "drop")
+  
+temp <- temp_year %>% 
+  left_join(temp_total, by = "Flag") %>% 
+  arrange(desc(total)) %>% 
+  mutate(
+    Flag = countrycode::countrycode(
+      Flag,
+      origin = "iso3c",
+      destination = "cldr.name.es",
+      warn = FALSE
+    )
+  )
+
+
+
+kableExtra::kable(
+  temp[1:10, ],
+  format.args = list(
+    big.mark = ".",
+    scientific = FALSE
+  )
+)
+```
+
+```{r}
+n_ais_year <- dataAllEEZ %>% 
+  filter(id %in% c(8423)) %>% 
+  mutate(year = as.numeric(year)) %>%   # asegurar que sea numérico
+  group_by(`Vessel ID`, year) %>% 
+  summarise(n = n(), .groups = "drop") %>% 
+  group_by(year) %>% 
+  summarise(n = n(), .groups = "drop") %>% 
+  arrange(year)
+  
+kableExtra::kable(n_ais_year)
+```
+
+
+
+Ahora sumo el total de los otros paises
+
+```{r}
+resumen_anual <- temp[-(1:10),] %>%
+  summarise(
+    across(
+      where(is.numeric),
+      ~ sum(.x, na.rm = TRUE)
+    ),
+    .groups = "drop"
+  )
+
+kableExtra::kable(
+  resumen_anual,
+  format.args = list(
+    big.mark = ".",
+    scientific = FALSE
+  )
+)
+
+write.csv(temp, file="~/Downloads/temp.csv")
+```
+
+
+
+
+## Solo pesqueros
+
+```{r with = 12}
+nConEsfuerzoPesqueros <- dataAllEEZ_fh %>% 
+          filter(id %in% c(8423),
+                `Vessel Type` == "FISHING") %>% 
+          group_by(`Vessel ID`, `Gear Type`, Flag) %>% 
+          summarise(n = n()) %>% 
+          group_by(Flag, `Gear Type`) %>% 
+          summarise(n = n()) 
+
+
+data_plot <- nConEsfuerzoPesqueros %>% 
+  mutate(
+    pais = countrycode::countrycode(
+      Flag,
+      origin = "iso3c",
+      destination = "cldr.short.es",
+      warn = FALSE
+    )) %>% 
+  mutate(arte = case_when(
+      `Gear Type` == "TUNA_PURSE_SEINES" ~ "Cerco de atún",
+      `Gear Type` == "TRAWLERS" ~ "Arrastre",
+      `Gear Type` == "FISHING" ~ "Pesca",
+      `Gear Type` == "POLE_AND_LINE" ~ "Caña y línea",
+      `Gear Type` == "SQUID_JIGGER" ~ "Poteras",
+      `Gear Type` == "DRIFTING_LONGLINES" ~ "Palangre a la deriva",
+      `Gear Type` %in% c("OTHER_PURSE_SEINES", "PURSE_SEINES") ~ "Cerquero",
+      `Gear Type` == "POTS_AND_TRAPS" ~ "Trampas",
+      `Gear Type` == "SET_LONGLINES" ~ "Palangre",
+      TRUE ~ "Otro"
+    ))
+
+ggplot(data_plot, aes(x = reorder(pais, -n),
+                 y = n,
+                 fill = arte)) +
+  geom_col() +
+   scale_color_manual(values = colores_barco) +
+  labs(
+    x = "País",
+    y = "Número de embarcaciones",
+    fill = "Arte de pesca"
+  ) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+```
+
+```{r}
+top_n_paises <- 15
+nConEsfuerzoPesqueros <- dataAllEEZ_fh %>%
+  filter(
+    id %in% c(8423),
+    `Vessel Type` == "FISHING"
+  ) %>%
+  group_by(`Vessel ID`, `Gear Type`, Flag) %>%
+  summarise(n = n(), .groups = "drop") %>%
+  group_by(Flag, `Gear Type`) %>%
+  summarise(n = n(), .groups = "drop")
+colores_barco <- c(
+  "Cerco de atún" = "#1b9e77",
+  "Arrastre" = "#d95f02",
+  "Pesca" = "#7570b3",
+  "Caña y línea" = "#e7298a",
+  "Poteras" = "#66a61e",
+  "Palangre a la deriva" = "#e6ab02",
+  "Cerquero" = "#a6761d",
+  "Trampas" = "#666666",
+  "Palangre" = "#1f78b4",
+  "Otro" = "#b2df8a"
+)
+data_plot <- nConEsfuerzoPesqueros %>%
+  mutate(
+    pais = countrycode::countrycode(
+      Flag,
+      origin = "iso3c",
+      destination = "cldr.short.es",
+      warn = FALSE
+    ),
+    pais = if_else(is.na(pais), Flag, pais),
+    arte = case_when(
+      `Gear Type` == "TUNA_PURSE_SEINES" ~ "Cerco de atún",
+      `Gear Type` == "TRAWLERS" ~ "Arrastre",
+      `Gear Type` == "FISHING" ~ "Pesca",
+      `Gear Type` == "POLE_AND_LINE" ~ "Caña y línea",
+      `Gear Type` == "SQUID_JIGGER" ~ "Poteras",
+      `Gear Type` == "DRIFTING_LONGLINES" ~ "Palangre a la deriva",
+      `Gear Type` %in% c("OTHER_PURSE_SEINES", "PURSE_SEINES") ~ "Cerquero",
+      `Gear Type` == "POTS_AND_TRAPS" ~ "Trampas",
+      `Gear Type` == "SET_LONGLINES" ~ "Palangre",
+      TRUE ~ "Otro"
+    )
+  ) %>%
+  group_by(pais) %>%
+  mutate(total_pais = sum(n, na.rm = TRUE)) %>%
+  ungroup() %>%
+  mutate(
+    pais = forcats::fct_lump_n(
+      pais,
+      n = top_n_paises,
+      w = n,
+      other_level = "Otros países"
+    )
+  ) %>%
+  group_by(pais, arte) %>%
+  summarise(n = sum(n, na.rm = TRUE), .groups = "drop") %>%
+  group_by(pais) %>%
+  mutate(total_pais = sum(n, na.rm = TRUE)) %>%
+  ungroup() %>%
+  mutate(
+    pais = forcats::fct_reorder(pais, total_pais, .desc = TRUE),
+    pais = forcats::fct_relevel(pais, "Otros países", after = Inf),
+    arte = factor(arte, levels = names(colores_barco))
+  )
+ggplot(data_plot, aes(x = pais, y = n, fill = arte)) +
+  geom_col() +
+  scale_fill_manual(
+    values = colores_barco,
+    na.value = "grey70",
+    drop = TRUE
+  ) +
+  labs(
+    x = "País",
+    y = "Número de embarcaciones",
+    fill = "Arte de pesca"
+  ) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+
+## Horas de Esfuerzo de pesca aparente por pais
+
+```{r}
+hfe_y <- dataAllEEZ_fh %>% 
+    mutate(
+    pais = countrycode::countrycode(
+      Flag,
+      origin = "iso3c",
+      destination = "cldr.short.es",
+      warn = FALSE
+    )) %>% 
+        filter(id %in% c(8423)) %>% 
+        group_by(pais, year) %>% 
+        summarise(fh = sum(`Apparent Fishing Hours`, na.rm = T)) %>% 
+  pivot_wider(
+    names_from = year,
+    values_from = fh
+  ) %>% 
+      mutate(pais = if_else(is.na(pais), "No declarado", pais))
+  
+hfe_tot <- dataAllEEZ_fh %>% 
+    mutate(
+    pais = countrycode::countrycode(
+      Flag,
+      origin = "iso3c",
+      destination = "cldr.short.es",
+      warn = FALSE
+    )) %>% 
+        filter(id %in% c(8423)) %>% 
+        group_by(pais) %>% 
+        summarise(Total = sum(`Apparent Fishing Hours`, na.rm = T)) %>% 
+      mutate(pais = if_else(is.na(pais), "No declarado", pais))
+
+hfw <- hfe_y %>% 
+  left_join(hfe_tot, by = "pais") %>% 
+  arrange(desc(Total)) %>% 
+  mutate(across(where(is.numeric), ~ round(.)))
+
+# identificar columnas que son años (solo números)
+year_cols <- names(hfw)[grepl("^[0-9]{4}$", names(hfw))]
+
+# ordenarlas de mayor a menor
+year_cols <- sort(year_cols)
+
+# reconstruir tabla: pais | años (desc) | Total
+hfw <- hfw %>%
+  select(pais, all_of(year_cols), Total)
+
+hfw_print <- hfw %>%
+  ungroup() %>%
+  mutate(across(everything(), ~ ifelse(is.na(.), "-", .)))
+
+kableExtra::kable(
+  hfw_print[1:10,],
+  format.args = list(
+    big.mark = ".",
+    scientific = FALSE
+  )
+)
+  
+```
+
+# N° barcos pesqueros
+
+## Total
+
+```{r}
+nConEsfuerzo_year <- dataAllEEZ_fh %>% 
+          filter(id %in% c(8423),
+                `Vessel Type` == "FISHING") %>% 
+          mutate(arte = case_when(
+              `Gear Type` == "TUNA_PURSE_SEINES" ~ "Cerco de atún",
+              `Gear Type` == "TRAWLERS" ~ "Arrastre",
+              `Gear Type` == "FISHING" ~ "Pesca",
+              `Gear Type` == "POLE_AND_LINE" ~ "Caña y línea",
+              `Gear Type` == "SQUID_JIGGER" ~ "Poteras",
+              `Gear Type` == "DRIFTING_LONGLINES" ~ "Palangre a la deriva",
+              `Gear Type` %in% c("OTHER_PURSE_SEINES", "PURSE_SEINES") ~ "Cerquero",
+              `Gear Type` == "POTS_AND_TRAPS" ~ "Trampas",
+              `Gear Type` == "SET_LONGLINES" ~ "Palangre",
+              TRUE ~ "Otro"
+            )) %>% 
+          group_by(`Vessel ID`, arte) %>% 
+          summarise(n = n()) %>% 
+          group_by(arte) %>% 
+          summarise(n = n()) 
+
+ggplot(nConEsfuerzo_year, aes(x = reorder(arte, n),
+                              y = n)) +
+  geom_col(fill = gfw_palettes$primary[2], alpha = .6) +
+  labs(
+    x = "Arte",
+    y = "N° de barcos"
+  ) +
+  theme(
+    axis.text.x = element_text(size = 9),
+    axis.text.y = element_text(size = 9)
+  ) +
+  coord_flip()
+
+```
+
+## Por años
+
+```{r fig.width=7, fig.height=6}
+nConEsfuerzo_year <- dataAllEEZ_fh %>% 
+          filter(id %in% c(8423),
+                `Vessel Type` == "FISHING") %>% 
+          mutate(arte = case_when(
+              `Gear Type` == "TUNA_PURSE_SEINES" ~ "Cerco de atún",
+              `Gear Type` == "TRAWLERS" ~ "Arrastre",
+              `Gear Type` == "FISHING" ~ "Pesca",
+              `Gear Type` == "POLE_AND_LINE" ~ "Caña y línea",
+              `Gear Type` == "SQUID_JIGGER" ~ "Poteras",
+              `Gear Type` == "DRIFTING_LONGLINES" ~ "Palangre a la deriva",
+              `Gear Type` %in% c("OTHER_PURSE_SEINES", "PURSE_SEINES") ~ "Cerquero",
+              `Gear Type` == "POTS_AND_TRAPS" ~ "Trampas",
+              `Gear Type` == "SET_LONGLINES" ~ "Palangre",
+              TRUE ~ "Otro"
+            )) %>% 
+          group_by(year, `Vessel ID`, arte) %>% 
+          summarise(n = n()) %>% 
+          group_by(year, arte) %>% 
+          summarise(n = n()) 
+
+ggplot(nConEsfuerzo_year, aes(x = reorder(arte, n),
+                              y = n)) +
+  geom_col(fill = gfw_palettes$primary[2], alpha = .6) +
+  labs(
+    x = "Arte",
+    y = "N° de barcos"
+  ) +
+  theme(
+    axis.text.x = element_text(size = 9),
+    axis.text.y = element_text(size = 9)
+  ) +
+  facet_wrap(~year) +
+  coord_flip()
+
+```
+
+
+# Presencia espacial
+
+```{r}
+mapa_year <- dataAllEEZ %>% 
+  filter(id %in% c(8423)) %>% 
+  group_by(Lat, Lon, year ) %>% 
+  summarise(hp = sum(`Vessel Presence Hours`, na.rm=T))
+
+mapa_total <- dataAllEEZ %>% 
+  filter(id %in% c(8423)) %>% 
+  group_by(Lat, Lon) %>% 
+  summarise(hp = sum(`Vessel Presence Hours`, na.rm=T))
+  
+```
+
+## Acumulado
+
+```{r fig.width=7, fig.height=4.8}
+gfw_map(theme = 'dark', res = 10, eezs = TRUE) +
+    geom_tile(data = mapa_total,
+              aes(x = Lon, y = Lat, fill = hp, interpolate=TRUE), show.legend = TRUE) +
+    geom_sf(data = amp_panama, col = "white", #gfw_palettes$primary[1], 
+            fill = gfw_palettes$primary[1], alpha = 0) +
+    coord_sf(xlim = xlimites, ylim = ylimites, crs = 4326) +
+    viridis::scale_fill_viridis(limits = c(0, 50),
+                     breaks=seq(0,50,by=10),
+                     oob = scales::squish,
+                     na.value = NA) +
+    theme(
+      axis.title = element_text(size = 9),
+      axis.title.x = element_text(margin = margin(t = 4, unit = "pt")), 
+      axis.text = element_text(size = 9),
+      axis.text.x = element_text(size = 9, angle = 45, hjust = 1),
+      axis.text.y = element_text(size = 9),
+      axis.ticks.y = element_line(color = "darkgrey"),
+      strip.text = element_text(size = 9, face = "bold"),
+      legend.position = "right",  # Mostrar leyenda
+      legend.key.width = unit(0.3, "cm")
+      ) +
+    labs( x = "Longitud", y = "Latitud", fill = "Presencia (hr)" ) 
+
+```
+
+## Anual
+
+
+```{r cache=FALSE}
+
+mapa_year2 <- mapa_year %>%
+  mutate(year = as.integer(year)) %>%
+  filter(year <= 2025) %>%
+  arrange(year)
+
+annual_years <- sort(unique(mapa_year2$year))
+annual_years_page1 <- head(annual_years, 9)
+annual_years_page2 <- annual_years[!annual_years %in% annual_years_page1]
+
+annual_map_base <- function(plot_data) {
+  gfw_map(theme = "dark", res = 10, eezs = TRUE) +
+    geom_sf(data = amp_panama, col = "white",   linewidth = 0.05, #gfw_palettes$primary[1], 
+            fill = gfw_palettes$primary[1], alpha = 0) +
+    coord_sf(xlim = xlimites, ylim = ylimites, crs = 4326, expand = FALSE) +
+    geom_tile(
+      data = plot_data,
+      aes(x = Lon, y = Lat, fill = hp),
+      show.legend = TRUE
+    ) +
+    viridis::scale_fill_viridis(
+      limits = c(0, 15),
+      breaks = seq(0, 15, 5),
+      oob = scales::squish,
+      na.value = NA
+    ) +
+    labs(x = "Longitud", y = "Latitud", fill = "Presencia (hr)") +
+    theme(
+      panel.spacing.x = unit(0.08, "lines"),
+      panel.spacing.y = unit(0.08, "lines"),
+      plot.margin = std_plot_margin,
+      strip.background = element_blank(),
+      strip.text = element_text(size = 9),
+      axis.title = element_text(size = 9),
+      axis.text = element_text(size = 9),
+      axis.text.x = element_text(angle = 45, hjust = 1),
+      legend.position = "right",
+      legend.key.width = unit(0.3, "cm")
+    )
+}
+
+```
+
+```{r annual-map-page1, fig.width=7, fig.height=4.8, cache=FALSE}
+print(
+  annual_map_base(filter(mapa_year2, year %in% annual_years_page1)) +
+    ggforce::facet_wrap_paginate(~year, ncol = 3, nrow = 3, page = 1)
+)
+```
+
+```{r annual-map-page2, fig.width=7, fig.height=3.2, cache=FALSE}
+print(
+  annual_map_base(filter(mapa_year2, year %in% annual_years_page2)) +
+    ggforce::facet_wrap_paginate(~year, ncol = 3, nrow = 2, page = 1)
+)
+```
+
+### Por bandera
+
+```{r}
+ # 1) top 9 por hp (solo 1 fila por Flag)
+top9 <- dataAllEEZ %>% 
+  filter(id %in% c(8423)) %>% 
+  group_by(Flag) %>% 
+  summarise(hp = sum(`Vessel Presence Hours`, na.rm = TRUE), .groups = "drop") %>% 
+  arrange(desc(hp)) %>% 
+  slice_head(n = 9)
+
+# 2) diccionario ISO3 -> nombre (solo 9 filas)
+dic <- top9 %>%
+  transmute(
+    Flag,
+    pais = countrycode(Flag, origin = "iso3c", destination = "country.name")
+  )
+
+# si hay NA (ej HKG), parche manual
+dic <- dic %>%
+  mutate(pais = ifelse(is.na(pais), Flag, pais))
+
+# 3) mapa (ya filtrado a top 9) y join del nombre
+mapa_pais_9 <- dataAllEEZ %>% 
+  filter(id %in% c(8423), Flag %in% top9$Flag) %>% 
+  group_by(Lat, Lon, Flag) %>% 
+  summarise(hp = sum(`Vessel Presence Hours`, na.rm = TRUE), .groups = "drop") %>%
+  left_join(dic, by = "Flag") %>%
+  mutate(pais = factor(pais, levels = dic$pais))  # orden exacto del top9
+
+# 4) plot
+p <- gfw_map(theme = "dark", res = 10, eezs = TRUE) +
+      geom_sf(data = amp_panama, col = "white",   linewidth = 0.05, #gfw_palettes$primary[1], 
+            fill = gfw_palettes$primary[1], alpha = 0) +
+  coord_sf(xlim = xlimites, ylim = ylimites, crs = 4326, expand = FALSE) +
+  geom_tile(data = mapa_pais_9, aes(Lon, Lat, fill = hp)) +
+  viridis::scale_fill_viridis(
+    limits = c(0, 10), breaks = seq(0, 10, 2.5),
+    oob = scales::squish, na.value = NA
+  ) +
+  labs(x = "Longitud", y = "Latitud", fill = "Presencia (hr)") +
+  theme(
+    panel.spacing.x = unit(0.08, "lines"),
+    panel.spacing.y = unit(0.08, "lines"),
+    plot.margin = std_plot_margin,
+    strip.background = element_blank(),
+    strip.text = element_text(size = 9),
+    axis.title = element_text(size = 9),
+    axis.text = element_text(size = 9),
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    legend.position = "right",
+    legend.key.width = unit(0.3, "cm")
+  ) +
+  facet_wrap(~pais, ncol = 3)
+
+p
+```
+
+## Solo ecuatorianos
+
+```{r}
+ # 1) top 9 por hp (solo 1 fila por Flag)
+preseEcua <- dataAllEEZ %>% 
+  filter(id %in% c(8423)) %>% 
+  filter(Flag == "PAN") %>% 
+  group_by(Lat, Lon) %>% 
+  summarise(hp = sum(`Vessel Presence Hours`, na.rm = TRUE), .groups = "drop")
+  
+# 4) plot
+gfw_map(theme = "dark", res = 10, eezs = TRUE) +
+      geom_sf(data = amp_panama, col = "white",   linewidth = 0.1, #gfw_palettes$primary[1], 
+            fill = gfw_palettes$primary[1], alpha = 0) +
+  coord_sf(xlim = xlimites, ylim = ylimites, crs = 4326, expand = FALSE) +
+  geom_tile(data = preseEcua, aes(Lon, Lat, fill = hp)) +
+    viridis::scale_fill_viridis(limits = c(0, 20),
+                     breaks=seq(0,20,by=5),
+                     oob = scales::squish,
+                     na.value = NA) +
+  labs(x = "Longitud", y = "Latitud", fill = "Presencia (hr)") +
+  theme(
+    panel.spacing.x = unit(0.08, "lines"),
+    panel.spacing.y = unit(0.08, "lines"),
+    plot.margin = std_plot_margin,
+    strip.background = element_blank(),
+    strip.text = element_text(size = 9),
+    axis.title = element_text(size = 9),
+    axis.text = element_text(size = 9),
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    legend.position = "right",
+    legend.key.width = unit(0.3, "cm")
+  ) 
+```
+
+## Solo ecuatorianos x Año
+
+```{r cache=FALSE}
+ # 1) top 9 por hp (solo 1 fila por Flag)
+preseEcua <- dataAllEEZ %>% 
+  filter(id %in% c(8423)) %>% 
+  filter(Flag == "PAN") %>% 
+  mutate(year = as.integer(year)) %>%
+  filter(year <= 2025) %>%
+  group_by(Lat, Lon, year) %>% 
+  summarise(hp = sum(`Vessel Presence Hours`, na.rm = TRUE), .groups = "drop")
+
+ecu_years <- sort(unique(preseEcua$year))
+ecu_years_page1 <- head(ecu_years, 9)
+ecu_years_page2 <- ecu_years[!ecu_years %in% ecu_years_page1]
+
+ecu_map_base <- function(plot_data) {
+  gfw_map(theme = "dark", res = 10, eezs = TRUE) +
+        geom_sf(data = amp_panama, col = "white",   linewidth = 0.05, #gfw_palettes$primary[1], 
+            fill = gfw_palettes$primary[1], alpha = 0) +
+    coord_sf(xlim = xlimites, ylim = ylimites, crs = 4326, expand = FALSE) +
+    geom_tile(data = plot_data, aes(Lon, Lat, fill = hp)) +
+    viridis::scale_fill_viridis(limits = c(0.1, 5),
+                     breaks=seq(0,5,by=1),
+                     oob = scales::squish,
+                     na.value = NA) +
+  labs(x = "Longitud", y = "Latitud", fill = "Presencia (hr)") +
+  theme(
+    panel.spacing.x = unit(0.08, "lines"),
+    panel.spacing.y = unit(0.08, "lines"),
+    plot.margin = std_plot_margin,
+    strip.background = element_blank(),
+    strip.text = element_text(size = 9),
+    axis.title = element_text(size = 9),
+    axis.text = element_text(size = 9),
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    legend.position = "right",
+    legend.key.width = unit(0.3, "cm"))# +
+    #facet_wrap(~year)
+}
+
+```
+
+```{r ecu-map-page1, fig.width=7, fig.height=4.8, cache=FALSE}
+print(
+  ecu_map_base(filter(preseEcua, year %in% ecu_years_page1)) +
+    ggforce::facet_wrap_paginate(~year, ncol = 3, nrow = 3, page = 1)
+)
+```
+
+```{r ecu-map-page2, fig.width=7, fig.height=3.4, cache=FALSE}
+print(
+  ecu_map_base(filter(preseEcua, year %in% ecu_years_page2)) +
+    ggforce::facet_wrap_paginate(~year, ncol = 3, nrow = 2, page = 1)
+)
+```
+
+# Esfuerzo de pesca aparente
+
+```{r}
+tempDinamics <- dataAllEEZ_fh %>% 
+                mutate(
+                    fecha_date = ym(`Time Range`),              # convierte "2020-02"
+                    mes_num = month(fecha_date),         # 1–12
+                    mes = month(fecha_date, label = TRUE, abbr = FALSE)  # nombre completo
+                  ) %>% 
+                  mutate(arte = case_when(
+                    `Gear Type` == "TUNA_PURSE_SEINES" ~ "Cerco de atún",
+                    `Gear Type` == "TRAWLERS" ~ "Arrastre",
+                    `Gear Type` == "POLE_AND_LINE" ~ "Caña y línea",
+                    `Gear Type` == "SQUID_JIGGER" ~ "Poteras",
+                    `Gear Type` %in% c("OTHER_PURSE_SEINES", "PURSE_SEINES") ~ "Cerquero",
+                    `Gear Type` == "POTS_AND_TRAPS" ~ "Trampas",
+                    `Gear Type` %in% c("SET_LONGLINES", "DRIFTING_LONGLINES") ~ "Palangre",
+                    `Gear Type` == "FISHING" ~ "Otros pesqueros",
+                    TRUE ~ "Otros pesqueros"
+                  )) %>% 
+                  group_by(year, mes, fecha_date, arte) %>% 
+                  summarise(fe = sum(`Apparent Fishing Hours`, na.rm=T))
+
+                    
+```
+
+```{r}
+temporalTile <- function(dtGear,
+                         x_min,
+                         x_max,
+                         fill_limits) {
+
+  ggplot(dtGear,
+         aes(x = year, y = mes, fill = fe)) +
+    
+    geom_tile(color = "#f7f7f7", linewidth = 1.3) +
+    
+    scale_x_continuous(
+      limits = c(x_min, x_max),
+      breaks = seq(x_min, x_max, by = 1),      # años enteros
+      labels = scales::label_number(accuracy = 1),
+      expand = c(0, 0)
+    ) +
+    
+    scale_fill_viridis(
+      option = "A",
+      limits = fill_limits,
+      oob = scales::squish,
+      na.value = "grey10"
+    ) +
+    
+    labs(x = "", y = "", fill = "Esfuerzo de pesca\naparente (hr)") +
+    theme(
+      panel.grid = element_blank(),
+      
+      # 🔹 Rotar años 45°
+      axis.text.x = element_text(
+        angle = 45,
+        hjust = 1,
+        vjust = 1
+      ),
+      
+      # 🔹 Leyenda más angosta
+      legend.position = "bottom",
+      legend.key.width  = unit(1.2, "cm"),   # antes 3 cm
+      legend.key.height = unit(2.5, "mm"),
+      
+      legend.text = element_text(
+        family = "Roboto",
+        color = "#848b9b",
+        size = 9
+      ),
+      
+      legend.title = element_text(
+        family = "Roboto",
+        face = "bold",
+        color = "#848b9b",
+        size = 9
+      ),
+      plot.margin = std_plot_margin
+    )
+}
+```
+
+
+```{r}
+
+temp2 <- tempDinamics %>%
+  mutate(fecha = ymd(fecha_date))  # <- fecha_date: "2020-02"
+
+# min/max usando la columna fecha (ya convertida)
+fecha_min <- min(temp2$fecha, na.rm = TRUE)
+fecha_max <- max(temp2$fecha, na.rm = TRUE)
+
+# secuencia mensual completa
+all_months <- seq(fecha_min, fecha_max, by = "1 month")
+
+# completar malla mensual por arte
+temp_complete <- temp2 %>%
+  group_by(arte) %>%
+  complete(fecha = all_months, fill = list(fe = NA_real_)) %>%  # o fe=0 si prefieres
+  ungroup() %>%
+  mutate(
+    anio = year(fecha),
+    mes_num = month(fecha),
+    mes = factor(
+      c("Ene","Feb","Mar","Abr","May","Jun",
+        "Jul","Ago","Sep","Oct","Nov","Dic")[mes_num],
+      levels = rev(c("Ene","Feb","Mar","Abr","May","Jun",
+                     "Jul","Ago","Sep","Oct","Nov","Dic"))
+    )
+  )
+
+# límites globales para misma escala de color en todos los artes
+lim_inf <- 0
+lim_sup <- max(temp_complete$fe, na.rm = TRUE)
+fill_limits <- c(lim_inf, lim_sup)
+```
+
+## Temporal Anual/Mensual
+
+```{r fig.width=7, fig.height=3.5, cache=FALSE}
+artes <- sort(unique(temp_complete$arte))
+
+for (a in artes) {
+  print(a)
+  dt <- temp_complete %>% filter(arte == a)
+  print(temporalTile(dt, x_min = 2012, x_max = 2026, fill_limits = c(0.1, max(dt$fe))))
+}
+```
+
+
+
+## Mapas espaciales de esfuerzo
+
+
+```{r}
+spaDinamics <- dataAllEEZ_fh %>% 
+                  mutate(arte = case_when(
+                    `Gear Type` == "TUNA_PURSE_SEINES" ~ "Cerco de atún",
+                    `Gear Type` == "TRAWLERS" ~ "Arrastre",
+                    `Gear Type` == "POLE_AND_LINE" ~ "Caña y línea",
+                    `Gear Type` == "SQUID_JIGGER" ~ "Poteras",
+                    `Gear Type` %in% c("OTHER_PURSE_SEINES", "PURSE_SEINES") ~ "Cerquero",
+                    `Gear Type` == "POTS_AND_TRAPS" ~ "Trampas",
+                    `Gear Type` %in% c("SET_LONGLINES", "DRIFTING_LONGLINES") ~ "Palangre",
+                    `Gear Type` == "FISHING" ~ "Otros pesqueros",
+                    TRUE ~ "Otros pesqueros"
+                  )) %>% 
+                  filter(arte %in% c("Palangre", "Cerco de atún", "Otros pesqueros",
+                                     "Cerquero", "Arrastre", "Caña y línea")) %>% 
+                  mutate(arte = factor(arte, levels = sort(unique(arte)))) %>% 
+                  group_by(Lat, Lon, arte) %>% 
+                  summarise(fe = sum(`Apparent Fishing Hours`, na.rm=T))
+
+```
+
+### Acumulado por arte
+
+```{r fig.width=7, fig.height=4.8}
+gfw_map(theme = 'dark', res = 10, eezs = TRUE) +
+      geom_sf(data = amp_panama, col = "white",   linewidth = 0.05, #gfw_palettes$primary[1], 
+            fill = gfw_palettes$primary[1], alpha = 0) +
+    coord_sf(xlim = xlimites, ylim = ylimites, crs = 4326) +
+    geom_tile(data = spaDinamics,
+              aes(x = Lon, y = Lat, fill = fe, interpolate=TRUE), show.legend = TRUE) +
+    viridis::scale_fill_viridis(limits = c(0.1, 2),
+                     breaks=seq(0,2,by=.5),
+                     oob = scales::squish,
+                     na.value = NA) +
+    theme(
+      axis.title = element_text(size = 9),
+      axis.title.x = element_text(margin = margin(t = 4, unit = "pt")), 
+      axis.text = element_text(size = 9),
+      axis.text.x = element_text(size = 9, angle = 45, hjust = 1),
+      axis.text.y = element_text(size = 9),
+      axis.ticks.y = element_line(color = "white"),
+      strip.text = element_text(size = 9, face = "bold"),
+      legend.position = "right",  # Mostrar leyenda
+      legend.key.width = unit(0.3, "cm")
+      ) +
+    labs( x = "Longitud", y = "Latitud", fill = "Esfuerzo de pesca \n aparente (hr)" ) +
+    facet_wrap(~arte)
+
+```
+
+
+### Cerco de atun por año
+
+```{r}
+spaDinamics <- dataAllEEZ_fh %>% 
+                  mutate(arte = case_when(
+                    `Gear Type` == "TUNA_PURSE_SEINES" ~ "Cerco de atún",
+                    `Gear Type` == "TRAWLERS" ~ "Arrastre",
+                    `Gear Type` == "POLE_AND_LINE" ~ "Caña y línea",
+                    `Gear Type` == "SQUID_JIGGER" ~ "Poteras",
+                    `Gear Type` %in% c("OTHER_PURSE_SEINES", "PURSE_SEINES") ~ "Cerquero",
+                    `Gear Type` == "POTS_AND_TRAPS" ~ "Trampas",
+                    `Gear Type` %in% c("SET_LONGLINES", "DRIFTING_LONGLINES") ~ "Palangre",
+                    `Gear Type` == "FISHING" ~ "Otros pesqueros",
+                    TRUE ~ "Otros pesqueros"
+                  )) %>% 
+                  filter(arte %in% c("Cerco de atún", "Cerquero", "Palangre")) %>% 
+                  mutate(arte = factor(arte, levels = sort(unique(arte)))) %>% 
+                  group_by(year, Lat, Lon, arte) %>% 
+                  summarise(fe = sum(`Apparent Fishing Hours`, na.rm=T))
+
+```
+
+
+```{r fig.width=7, fig.height=7}
+gfw_map(theme = 'dark', res = 10, eezs = TRUE) +
+      geom_sf(data = amp_panama, col = "white",   linewidth = 0.05, #gfw_palettes$primary[1], 
+            fill = gfw_palettes$primary[1], alpha = 0) +
+    coord_sf(xlim = xlimites, ylim = ylimites, crs = 4326) +
+    geom_tile(data = spaDinamics %>% filter(year >= 2020),
+              aes(x = Lon, y = Lat, fill = fe, interpolate=TRUE), show.legend = TRUE) +
+    viridis::scale_fill_viridis(limits = c(0.1, 1),
+                     breaks=seq(0,1,by=.25),
+                     oob = scales::squish,
+                     na.value = NA) +
+    theme(
+      axis.title = element_text(size = 9),
+      axis.title.x = element_text(margin = margin(t = 4, unit = "pt")), 
+      axis.text = element_text(size = 9),
+      axis.text.x = element_text(size = 9, angle = 45, hjust = 1),
+      axis.text.y = element_text(size = 9),
+      axis.ticks.y = element_line(color = "white"),
+      strip.text = element_text(size = 9, face = "bold"),
+      legend.position = "right",  # Mostrar leyenda
+      legend.key.width = unit(0.3, "cm")
+      ) +
+    labs( x = "Longitud", y = "Latitud", fill = "Esfuerzo de pesca \n aparente (hr)" ) +
+    facet_grid(year~arte)
+
+```

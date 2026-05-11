@@ -1,0 +1,403 @@
+---
+title: "Visitas a puerto - AIS"
+author: Jorge F. Cornejo-Donoso
+date: last-modified
+date-format: "MMMM DD, YYYY"
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    lof: true
+    lot: true
+  pdf: 
+    toc: true
+    toc-depth: 3
+    lof: true
+    lot: true
+    geometry: "left=3cm,right=3cm,top=2cm,bottom=2cm"
+    number-sections: true
+    fontfamily: roboto
+    prefer-html: true
+execute:
+  cache: TRUE
+  cache.lazy: TRUE
+  dev: "ragg_png"
+  dpi: 300
+knitr:
+   opts_chunk: 
+     dev: "ragg_png"
+     echo: FALSE
+     warning: FALSE
+     message: FALSE
+     cache: TRUE
+     cache.lazy: TRUE
+     fig.align: 'center'
+     fig.width: 7
+     fig.height: 4.2
+     out.width: "100%"
+     #fig.dpi: 600
+     fig.pos: "H"
+
+---
+
+```{r results='hide', cache=FALSE}
+#| message: false
+#| warning: false
+#| paged-print: true
+require(ggplot2)
+require(dplyr)
+library(tidyr)
+library(fishwatchr)
+library(lubridate)
+library(gfwr)
+library(progress)
+library(bigrquery)
+library(sf)
+library(countrycode)
+library(viridis)
+library(purrr)
+library(stringr)
+library(knitr)
+library(kableExtra)
+library(tidyverse)
+
+options(scipen=999, 
+        digits = 6,
+        scales.big.mark = ",",
+        scales.decimal.mark = "."
+        )
+
+Sys.setlocale("LC_TIME", "es_ES.UTF-8") 
+```
+
+```{r cache=FALSE}
+std_base_size <- 9
+std_plot_margin <- margin(3, 3, 3, 3, unit = "pt")
+
+gfwT <- theme_gfw() +
+  theme(
+    text = element_text(size = std_base_size),
+    axis.title = element_text(size = std_base_size),
+    axis.title.x = element_text(margin = margin(t = 4, unit = "pt")),
+    axis.title.y = element_text(margin = margin(r = 4, unit = "pt")),
+    axis.text = element_text(size = std_base_size),
+    axis.text.x = element_text(size = std_base_size, hjust = 1, angle = 45),
+    axis.text.y = element_text(size = std_base_size),
+    axis.ticks.y = element_line(color = "white"),
+    strip.text = element_text(size = std_base_size, face = "bold"),
+    legend.position = "right",
+    legend.title = element_text(size = std_base_size),
+    legend.text = element_text(size = std_base_size),
+    legend.key.width = unit(0.5, "cm"),
+    legend.key.height = unit(0.5, "cm"),
+    plot.title = element_text(size = std_base_size + 1, face = "bold", hjust = 0.5, margin = margin(b = 4, unit = "pt")),
+    plot.subtitle = element_text(size = std_base_size, margin = margin(b = 4, unit = "pt")),
+    plot.caption = element_text(size = std_base_size - 1, margin = margin(t = 4, unit = "pt")),
+    plot.margin = std_plot_margin,
+    panel.spacing.x = unit(0.08, "lines"),
+    panel.spacing.y = unit(0.08, "lines"),
+    plot.background = element_rect(fill = "white", color = NA),
+    panel.background = element_rect(fill = "white", color = NA)
+  )
+
+theme_set(gfwT)
+
+```
+
+```{r}
+load(file="../data/eezs.rda")
+```
+
+# Eventos AIS
+
+```{r eval=F}
+
+eezIds <- bind_rows(gfw_region_id("Ecuador"), gfw_region_id("Galapagos")) %>%
+  distinct(id, .keep_all = TRUE) %>%
+  filter(id %in% c(8403, 8431))
+
+years <- 2020:2025
+event_types <- c("PORT_VISIT")
+
+n_years <- length(years)
+n_tasks <- length(eezIds$id) * length(event_types)
+
+# 2) Barra por año
+pbA <- progress_bar$new(
+  format = "Procesando años [:bar] :current/:total (:percent) | ETA: :eta",
+  total  = n_years,
+  clear  = FALSE,
+  width  = 60
+)
+
+data_list <- vector("list", n_years)
+
+for (yi in seq_along(years)) {
+
+  y <- years[yi]
+  pbA$tick()
+
+  # Barra para este año: EEZ x event_type
+  pb <- progress_bar$new(
+    format = paste0("Year ", y, " (EEZ x tipo) [:bar] :current/:total (:percent) | ETA: :eta"),
+    total  = n_tasks,
+    clear  = FALSE,
+    width  = 60
+  )
+
+  # Lista de resultados de este año
+  res_year <- vector("list", n_tasks)
+  idx <- 0
+
+  for (etype in event_types) {
+    for (eez_id in eezIds$id) {
+
+      pb$tick()
+      idx <- idx + 1
+
+      eez_label <- eezIds$label[match(eez_id, eezIds$id)]
+
+      dat <- tryCatch(
+        suppressMessages(
+          suppressWarnings(
+            gfw_event(
+              event_type    = etype,
+              start_date    = sprintf("%d-01-01", y),
+              end_date      = sprintf("%d-01-01", y + 1),
+              sort          = "+start",
+              region        = eez_id,
+              region_source = "EEZ",
+              duration      = 6 * 60
+            )
+          )
+        ),
+        error = function(e) NULL
+      )
+
+      # Si no hubo datos o falló la consulta, guardamos tibble vacío con metadatos
+      if (is.null(dat) || nrow(dat) == 0) {
+        res_year[[idx]] <- tibble(
+          year = y,
+          eez_id = eez_id,
+          eez_label = eez_label,
+          event_type = etype
+        )
+      } else {
+        # Agregar metadatos
+        res_year[[idx]] <- dat %>%
+          mutate(
+            year = y,
+            eez_id = eez_id,
+            eez_label = eez_label,
+            event_type = etype
+          )
+      }
+
+      # opcional: evitar rate limit
+      Sys.sleep(0.2)
+    }
+  }
+
+  # bind_rows une aunque haya columnas distintas (rellena con NA)
+  data_list[[yi]] <- bind_rows(res_year)
+}
+
+puertosAIS <- bind_rows(data_list)
+save(puertosAIS, file="../data/Puertos_ais.rda")
+```
+
+
+```{r}
+load(file = "../data/Puertos_ais.rda")
+
+if (!exists("puertosAIS") && exists("eventos")) {
+  puertosAIS <- eventos
+}
+
+extraer_nombre_puerto <- function(info) {
+  anchorage <- purrr::pluck(info, "intermediateAnchorage", .default = NULL)
+
+  if (is.null(anchorage) && length(info) > 0 && is.list(info[[1]])) {
+    anchorage <- purrr::pluck(info[[1]], "intermediateAnchorage", .default = NULL)
+  }
+
+  nombre <- purrr::pluck(anchorage, "name", .default = NA_character_)
+
+  if (is.null(nombre) || length(nombre) == 0) {
+    return(NA_character_)
+  }
+
+  as.character(nombre[[1]])
+}
+```
+
+
+```{r}
+puertosAIS %>% 
+          mutate(conVesID = if_else(!is.na(vessel_ssvid), "Si", "No")) %>% 
+          group_by(eventId, year, eez_label, event_type) %>% 
+          summarise(n = n()) %>% 
+          group_by(year, eez_label, event_type) %>% 
+          summarise(n = n()) %>% 
+          pivot_wider(
+            names_from = c(event_type, eez_label), 
+            values_from = n,
+            values_fill = 0) %>% 
+      kable()
+```
+
+
+
+### Visitas a puerto
+
+```{r}
+
+portVisits <- puertosAIS %>%
+  mutate(area_nombre = case_when(
+    eez_id == 8403 ~ "Galápagos",
+    eez_id == 8431 ~ "Ecuador",
+    is.na(eez_id)  ~ "Fuera de EEZ",
+    TRUE ~ eez_label
+  ),
+    year = year(start),
+    puerto = map_chr(event_info, extraer_nombre_puerto),
+    lat_mean = lat,
+    lon_mean = lon,
+    barco_id = coalesce(vessel_ssvid, vesselId)
+  ) %>% 
+  filter(!is.na(puerto), !is.na(barco_id)) %>% 
+  group_by(year, eventId, puerto, area_nombre, lat_mean, lon_mean, barco_id) %>% 
+  summarise(n = n())
+
+mapPortVisits <- portVisits %>% 
+  group_by(puerto, area_nombre) %>% 
+  summarise(n = n(),
+            meanLat = mean(lat_mean, na.rm=T),
+            meanLon = mean(lon_mean, na.rm=T))
+
+write.csv(mapPortVisits, file = "~/Downloads/temp.csv")
+
+```
+
+#### Mapa de visitas a puerto
+
+```{r}
+gfw_map(theme = 'dark', res = 10, eezs = TRUE) +
+  coord_sf(xlim = c(-95, -77), ylim = c(-5, 5), crs = 4326) +
+  geom_point(data = mapPortVisits,
+             aes(x = meanLon, 
+                 y = meanLat, 
+                 col = area_nombre,
+                 size = n),      # <-- mapear dentro de aes()
+             alpha = .4,
+             show.legend = TRUE) +
+
+  scale_size_continuous(
+    name = "Número de visitas",
+    range = c(1, 10)   # tamaño mínimo y máximo de los puntos
+  ) +
+  scale_color_manual(
+    name = "Zona EEZ",
+    values = c(
+      "Galápagos" = gfw_palettes$map_presence_dark[3],
+      "Ecuador" = gfw_palettes$primary[1],
+      "Fuera de EEZ" = gfw_palettes$primary[2]
+    )
+  ) +
+guides(size = guide_legend(
+                override.aes = list(color = "#3182bd",  alpha = 0.7)
+                        ),
+  color = guide_legend(override.aes = list(size = 3)))+
+
+  theme(
+    axis.title = element_text(size = 9),
+    axis.title.x = element_text(margin = margin(t = 4, unit = "pt")), 
+    axis.text = element_text(size = 9),
+    axis.text.x = element_text(size = 9, angle = 45, hjust = 1),
+    axis.text.y = element_text(size = 9),
+    axis.ticks.y = element_line(color = "white"),
+    strip.text = element_text(size = 9),
+  legend.position = "bottom",
+  legend.box = "vertical",
+  legend.key.width = unit(0.4, "cm"),
+  legend.spacing.x = unit(0.2, "cm"),
+  legend.text = element_text(size = 9),
+  legend.title = element_text(size = 9)
+  ) +
+  labs(x = "Longitud", y = "Latitud")
+```
+
+
+
+#### Tabla de visitas a puerto
+
+```{r}
+portVisits %>% 
+  group_by(area_nombre, puerto, eventId, barco_id, year) %>% 
+  summarise(n = n()) %>% 
+  filter(year >= 2020) %>% 
+  group_by(area_nombre, puerto, year) %>% 
+  summarise(
+    #barcos = n_distinct(barco_id),
+    visitas = n(),
+    .groups = "drop"
+  ) %>% 
+  arrange(year, desc(visitas),puerto) %>% 
+  select(year, puerto, visitas) %>%
+  pivot_wider(
+    names_from = puerto,
+    values_from = visitas,
+    values_fill = 0
+  ) %>% 
+  #slice_head(n = 10) %>% 
+  kable(
+  #  col.names = c("year", "Zona EEZ", "Puerto", "Número de visitas")
+  )
+
+```
+
+
+```{r}
+top10_puertos <- portVisits %>% 
+  group_by(area_nombre, puerto, eventId, barco_id, year) %>% 
+  summarise(n = n(), .groups = "drop") %>% 
+  filter(year >= 2020, year <= 2025) %>% 
+  group_by(area_nombre, puerto, year) %>% 
+  summarise(
+    visitas = n(),
+    .groups = "drop"
+  ) %>% 
+  group_by(puerto) %>% 
+  summarise(
+    total_visitas = sum(visitas, na.rm = TRUE),
+   .groups = "drop"
+  ) %>% 
+  slice_max(
+    order_by = total_visitas,
+    n = 10,
+    with_ties = FALSE
+  ) %>% 
+  pull(puerto)
+
+portVisits %>% 
+  group_by(area_nombre, puerto, eventId, barco_id, year) %>% 
+  summarise(n = n(), .groups = "drop") %>% 
+  filter(year >= 2020, year <= 2025) %>% 
+  group_by(area_nombre, puerto, year) %>% 
+  summarise(
+    visitas = n(),
+    .groups = "drop"
+  ) %>% 
+  filter(puerto %in% top10_puertos) %>% 
+  arrange(year, desc(visitas), puerto) %>% 
+  select(year, puerto, visitas) %>%
+  pivot_wider(
+    names_from = puerto,
+    values_from = visitas,
+    values_fill = 0
+  ) %>% 
+  kable()
+
+```
+
+

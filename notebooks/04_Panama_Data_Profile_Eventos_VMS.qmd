@@ -1,0 +1,1142 @@
+---
+title: "Explorando datos de Ecuador con gfwR"
+author: Jorge F. Cornejo-Donoso
+date: last-modified
+date-format: "MMMM DD, YYYY"
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    lof: true
+    lot: true
+  pdf: 
+    toc: true
+    toc-depth: 3
+    lof: true
+    lot: true
+    geometry: "left=3cm,right=3cm,top=2cm,bottom=2cm"
+    number-sections: true
+    fontfamily: roboto
+    prefer-html: true
+execute:
+  cache: TRUE
+  cache.lazy: TRUE
+  dev: "ragg_png"
+  dpi: 300
+knitr:
+   opts_chunk: 
+     dev: "ragg_png"
+     echo: FALSE
+     warning: FALSE
+     message: FALSE
+     cache: TRUE
+     cache.lazy: TRUE
+     fig.align: 'center'
+     fig.width: 7
+     fig.height: 4.2
+     out.width: "100%"
+     #fig.dpi: 600
+     fig.pos: "H"
+
+---
+
+```{r results='hide', cache=FALSE}
+#| message: false
+#| warning: false
+#| paged-print: true
+require(ggplot2)
+require(dplyr)
+library(tidyr)
+library(fishwatchr)
+library(lubridate)
+library(gfwr)
+library(progress)
+library(bigrquery)
+library(sf)
+library(countrycode)
+library(viridis)
+library(purrr)
+library(stringr)
+library(knitr)
+library(kableExtra)
+library(tidyverse)
+library(patchwork)
+
+options(scipen=999, 
+        digits = 6,
+        scales.big.mark = ",",
+        scales.decimal.mark = "."
+        )
+
+Sys.setlocale("LC_TIME", "es_ES.UTF-8") 
+```
+
+```{r cache=FALSE}
+std_base_size <- 9
+std_plot_margin <- margin(3, 3, 3, 3, unit = "pt")
+
+gfwT <- theme_gfw() +
+  theme(
+    text = element_text(size = std_base_size),
+    axis.title = element_text(size = std_base_size),
+    axis.title.x = element_text(margin = margin(t = 4, unit = "pt")),
+    axis.title.y = element_text(margin = margin(r = 4, unit = "pt")),
+    axis.text = element_text(size = std_base_size),
+    axis.text.x = element_text(size = std_base_size, hjust = 1, angle = 45),
+    axis.text.y = element_text(size = std_base_size),
+    axis.ticks.y = element_line(color = "white"),
+    strip.text = element_text(size = std_base_size, face = "bold"),
+    legend.position = "right",
+    legend.title = element_text(size = std_base_size),
+    legend.text = element_text(size = std_base_size),
+    legend.key.width = unit(0.5, "cm"),
+    legend.key.height = unit(0.5, "cm"),
+    plot.title = element_text(size = std_base_size + 1, face = "bold", hjust = 0.5, margin = margin(b = 4, unit = "pt")),
+    plot.subtitle = element_text(size = std_base_size, margin = margin(b = 4, unit = "pt")),
+    plot.caption = element_text(size = std_base_size - 1, margin = margin(t = 4, unit = "pt")),
+    plot.margin = std_plot_margin,
+    panel.spacing.x = unit(0.08, "lines"),
+    panel.spacing.y = unit(0.08, "lines"),
+    plot.background = element_rect(fill = "white", color = NA),
+    panel.background = element_rect(fill = "white", color = NA)
+  )
+
+theme_set(gfwT)
+
+```
+
+```{r}
+load(file="../data/eezs.rda")
+```
+
+# Eventos AIS
+
+```{r eval=F}
+# library(gfwr)
+# library(dplyr)
+# library(purrr)
+# library(progress)
+
+# 1) EEZ ids (Ecuador + Galapagos) filtrados a los que quieres
+eezIds <- bind_rows(gfw_region_id("Ecuador"), gfw_region_id("Galapagos")) %>%
+  distinct(id, .keep_all = TRUE) %>%
+  filter(id %in% c(8403, 8431))
+
+years <- 2020:2025
+event_types <- c("ENCOUNTER", "GAP", "LOITERING", "PORT_VISIT")
+
+n_years <- length(years)
+n_tasks <- length(eezIds$id) * length(event_types)
+
+# 2) Barra por año
+pbA <- progress_bar$new(
+  format = "Procesando años [:bar] :current/:total (:percent) | ETA: :eta",
+  total  = n_years,
+  clear  = FALSE,
+  width  = 60
+)
+
+data_list <- vector("list", n_years)
+
+for (yi in seq_along(years)) {
+
+  y <- years[yi]
+  pbA$tick()
+
+  # Barra para este año: EEZ x event_type
+  pb <- progress_bar$new(
+    format = paste0("Year ", y, " (EEZ x tipo) [:bar] :current/:total (:percent) | ETA: :eta"),
+    total  = n_tasks,
+    clear  = FALSE,
+    width  = 60
+  )
+
+  # Lista de resultados de este año
+  res_year <- vector("list", n_tasks)
+  idx <- 0
+
+  for (etype in event_types) {
+    for (eez_id in eezIds$id) {
+
+      pb$tick()
+      idx <- idx + 1
+
+      eez_label <- eezIds$label[match(eez_id, eezIds$id)]
+
+      dat <- tryCatch(
+        suppressMessages(
+          suppressWarnings(
+            gfw_event(
+              event_type    = etype,
+              start_date    = sprintf("%d-01-01", y),
+              end_date      = sprintf("%d-01-01", y + 1),
+              sort          = "+start",
+              region        = eez_id,
+              region_source = "EEZ",
+              duration      = 6 * 60
+            )
+          )
+        ),
+        error = function(e) NULL
+      )
+
+      # Si no hubo datos o falló la consulta, guardamos tibble vacío con metadatos
+      if (is.null(dat) || nrow(dat) == 0) {
+        res_year[[idx]] <- tibble(
+          year = y,
+          eez_id = eez_id,
+          eez_label = eez_label,
+          event_type = etype
+        )
+      } else {
+        # Agregar metadatos
+        res_year[[idx]] <- dat %>%
+          mutate(
+            year = y,
+            eez_id = eez_id,
+            eez_label = eez_label,
+            event_type = etype
+          )
+      }
+
+      # opcional: evitar rate limit
+      Sys.sleep(0.2)
+    }
+  }
+
+  # bind_rows une aunque haya columnas distintas (rellena con NA)
+  data_list[[yi]] <- bind_rows(res_year)
+}
+
+eventos <- bind_rows(data_list)
+
+save(eventos, file="../data/eventos_ais.rda")
+```
+
+
+```{r}
+load(file = "../data/eventos_ais.rda")
+```
+
+
+```{r}
+eventos %>% 
+          filter(year < 2026,
+                 !is.na(eventId)) %>% 
+          mutate(conVesID = if_else(!is.na(vessel_ssvid), "Si", "No")) %>% 
+          group_by(year, eez_label, event_type) %>% 
+          summarise(n = n()) %>% 
+          pivot_wider(
+            names_from = c(event_type, eez_label), 
+            values_from = n,
+            values_fill = 0) %>% 
+      kable()
+```
+
+
+# Eventos VMS
+
+## Datos from BQ
+
+### Encuentros
+
+```{r eval=F}
+project_id <- "world-fishing-827"
+
+sql <- "
+WITH encu AS (
+  SELECT 
+    start_time, 
+    end_time, 
+    mean_latitude, 
+    mean_longitude,
+    ST_GEOGPOINT(mean_longitude, mean_latitude) AS point
+  FROM `global-fishing-watch.pipe_vms_ecu_v4_published.encounters`
+),
+
+eez AS ( 
+  SELECT 
+    MRGID, 
+    GEONAME, 
+    ST_GEOGFROMTEXT(wkt) AS geom
+  FROM `world-fishing-827.ocean_shapefiles_all_purpose.marine_regions_v11`
+  WHERE MRGID IN (8403, 8431)
+)
+
+SELECT 
+  e.*,
+  z.MRGID,
+  z.GEONAME,
+  IF(ST_WITHIN(e.point, z.geom), TRUE, FALSE) AS inside_eez
+FROM encu e
+LEFT JOIN eez z
+ON ST_INTERSECTS(e.point, z.geom)
+"
+tb <- bq_project_query(project_id, sql)
+encuentros <- bq_table_download(tb)
+#zee_sf <- st_as_sf(df, wkt = "wkt", crs = 4326)
+#print(zee_sf)
+#plot(st_geometry(zee_sf))
+save(encuentros, file="../data/encuentros_vms.rda")
+```
+### Derivas
+
+```{r eval=F}
+project_id <- "world-fishing-827"
+
+sql <- "
+WITH encu AS (
+  SELECT 
+    event_type, vessel_id, event_start, event_end, lat_mean, lon_mean, 
+        SAFE_CAST(JSON_VALUE(event_info, '$.loitering_hours') AS FLOAT64) AS h,
+        ST_GEOGPOINT(lon_mean, lat_mean) AS point
+FROM `global-fishing-watch.pipe_vms_ecu_v4_published.product_events_loitering`
+where SAFE_CAST(JSON_VALUE(event_info, '$.loitering_hours') AS FLOAT64) >= 1 
+      and SAFE_CAST(JSON_VALUE(event_info, '$.loitering_hours') AS FLOAT64) <= 30
+),
+
+eez AS ( 
+  SELECT 
+    MRGID, 
+    GEONAME, 
+    ST_GEOGFROMTEXT(wkt) AS geom
+  FROM `world-fishing-827.ocean_shapefiles_all_purpose.marine_regions_v11`
+  WHERE MRGID IN (8403, 8431)
+)
+
+SELECT 
+  e.*,
+  z.MRGID,
+  z.GEONAME,
+  IF(ST_WITHIN(e.point, z.geom), TRUE, FALSE) AS inside_eez
+FROM encu e
+LEFT JOIN eez z
+ON ST_INTERSECTS(e.point, z.geom)
+order by e.h
+"
+tb <- bq_project_query(project_id, sql)
+derivas <- bq_table_download(tb)
+#zee_sf <- st_as_sf(df, wkt = "wkt", crs = 4326)
+#print(zee_sf)
+#plot(st_geometry(zee_sf))
+#derivas <- read.csv(file="~/Downloads/bq-results-20260226-172404-1772126677814.csv")
+save(derivas, file="../data/derivas_vms.rda")
+```
+
+### Visitas a puerto
+
+```{r eval=F}
+project_id <- "world-fishing-827"
+
+sql <- "
+WITH encu AS (
+SELECT event_type, JSON_VALUE(event_info, '$.start_anchorage.flag') AS pais,
+  JSON_VALUE(event_info, '$.start_anchorage.name') AS puerto,
+  vessel_id, event_start, event_end, lat_mean, lon_mean,
+  regions_mean_position.eez,  ST_GEOGPOINT(lon_mean, lat_mean) AS point
+  FROM `global-fishing-watch.pipe_vms_ecu_v4_published.product_events_port_visit`
+),
+
+eez AS ( 
+  SELECT 
+    MRGID, 
+    GEONAME, 
+    ST_GEOGFROMTEXT(wkt) AS geom
+  FROM `world-fishing-827.ocean_shapefiles_all_purpose.marine_regions_v11`
+  WHERE MRGID IN (8403, 8431)
+)
+
+SELECT 
+  e.*,
+  z.MRGID,
+  z.GEONAME,
+  IF(ST_WITHIN(e.point, z.geom), TRUE, FALSE) AS inside_eez
+FROM encu e
+LEFT JOIN eez z
+ON ST_INTERSECTS(e.point, z.geom)
+"
+tb <- bq_project_query(project_id, sql)
+portVisits <- bq_table_download(tb)
+#zee_sf <- st_as_sf(df, wkt = "wkt", crs = 4326)
+#print(zee_sf)
+#plot(st_geometry(zee_sf))
+save(portVisits, file="../data/portVisits_vms.rda")
+```
+
+
+
+
+### Gaps
+
+```{r eval=F}
+project_id <- "world-fishing-827"
+
+sql <- "
+WITH encu AS (
+  SELECT
+    event_type, vessel_id, event_start, lat_min, lon_min, lat_max, lon_max,
+    SAFE_CAST(JSON_VALUE(event_info, '$.duration_h') AS FLOAT64) AS duration_h,
+    SAFE_CAST(JSON_VALUE(event_info, '$.total_distance_km') AS FLOAT64) AS total_distance_km,
+    JSON_VALUE(event_info, '$.vessel_class') AS vessel_class,
+    ST_GEOGPOINT(lon_min, lat_min) AS point1,
+    ST_GEOGPOINT(lon_max, lat_max) AS point2
+  FROM `global-fishing-watch.pipe_vms_ecu_v4_published.product_events_vms_gap`
+),
+
+eez AS ( 
+  SELECT 
+    MRGID, 
+    GEONAME, 
+    ST_GEOGFROMTEXT(wkt) AS geom
+  FROM `world-fishing-827.ocean_shapefiles_all_purpose.marine_regions_v11`
+  WHERE MRGID IN (8403, 8431)
+)
+
+SELECT
+  e.*,
+  z.MRGID,
+  z.GEONAME,
+  ST_WITHIN(e.point1, z.geom) AS point1_inside,
+  ST_WITHIN(e.point2, z.geom) AS point2_inside,
+  (ST_WITHIN(e.point1, z.geom) OR ST_WITHIN(e.point2, z.geom)) AS inside_eez
+FROM encu e
+LEFT JOIN eez z
+  ON (ST_INTERSECTS(e.point1, z.geom) OR ST_INTERSECTS(e.point2, z.geom));
+"
+tb <- bq_project_query(project_id, sql)
+gaps <- bq_table_download(tb)
+#zee_sf <- st_as_sf(df, wkt = "wkt", crs = 4326)
+#print(zee_sf)
+#plot(st_geometry(zee_sf))
+save(gaps, file="../data/gaps_vms.rda")
+```
+
+
+## Analizing the VMS events
+
+Cargar los datos datos de eventos VMS.
+```{r}
+load(file="../data/encuentros_vms.rda")
+load(file="../data/derivas_vms.rda")
+load(file="../data/portVisits_vms.rda")
+load(file="../data/gaps_vms.rda")
+```
+
+### Encuentros
+
+```{r}
+
+encuentros <- encuentros %>%
+  mutate(area_nombre = case_when(
+    MRGID == 8403 ~ "Galápagos",
+    MRGID == 8431 ~ "Ecuador",
+    is.na(MRGID)  ~ "Fuera de EEZ"
+  ),
+    year = year(start_time)
+  )
+
+```
+
+#### Mapa de encuentros
+
+```{r}
+vmsEncuentros <- gfw_map(theme = 'dark', res = 10, eezs = TRUE) +
+  coord_sf(xlim = c(-95, -77), ylim = c(-5, 5), crs = 4326) +
+  geom_point(data = encuentros,
+             aes(x = mean_longitude, 
+                 y = mean_latitude, 
+                 col = area_nombre),
+             size = 0.1,
+             show.legend = TRUE) +
+
+  scale_color_manual(
+    name = "Zona EEZ",
+    values = c(
+      "Galápagos" = gfw_palettes$map_presence_dark[3],
+      "Ecuador" = gfw_palettes$primary[1],
+      "Fuera de EEZ" = gfw_palettes$primary[2]
+    )
+  ) +
+  guides(
+    color = guide_legend(
+      override.aes = list(size = 3)   
+    )
+  ) +
+  theme(
+    axis.title = element_text(size = 9),
+    axis.title.x = element_text(margin = margin(t = 4, unit = "pt")), 
+    axis.text = element_text(size = 9),
+    axis.text.x = element_text(size = 9, angle = 45, hjust = 1),
+    axis.text.y = element_text(size = 9),
+    axis.ticks.y = element_line(color = "white"),
+    strip.text = element_text(size = 9, face = "bold"),
+    legend.position = "none",
+    legend.key.width = unit(0.6, "cm")) +
+  labs(x = "Longitud", y = "Latitud")
+```
+
+Agregamos los encuentros en AIS y hacemos un mapa unico
+
+
+```{r}
+eventos <- eventos %>% 
+            mutate(eez_label = if_else(eez_label == "Galapagos", "Galápagos", eez_label))
+
+aisEncuentros <- gfw_map(theme = 'dark', res = 10, eezs = TRUE) +
+  coord_sf(xlim = c(-95, -77), ylim = c(-5, 5), crs = 4326) +
+  geom_point(data = eventos %>% filter(eventType == "encounter"),
+             aes(x = lon, 
+                 y = lat, 
+                 col = eez_label),
+             size = 0.1,
+             show.legend = TRUE) +
+  scale_color_manual(
+    name = "Zona EEZ",
+    values = c(
+      "Galápagos" = gfw_palettes$map_presence_dark[3],
+      "Ecuador" = gfw_palettes$primary[1],
+      "Fuera de EEZ" = gfw_palettes$primary[2]
+    )
+  ) +
+  guides(
+    color = guide_legend(
+      override.aes = list(size = 3)   
+    )
+  ) +
+  theme(
+    axis.title = element_text(size = 9),
+    axis.title.x = element_text(margin = margin(t = 4, unit = "pt")), 
+    axis.text = element_text(size = 9),
+    axis.text.x = element_text(size = 9, angle = 45, hjust = 1),
+    axis.text.y = element_text(size = 9),
+    axis.ticks.y = element_line(color = "white"),
+    strip.text = element_text(size = 9, face = "bold"),
+    legend.position = "none",
+    legend.key.width = unit(0.6, "cm")
+  ) +
+  labs(x = "Longitud", y = "Latitud")
+```
+
+```{r fig.width=7, fig.height=4.2}
+
+escala_zona <- scale_color_manual(
+  name = "Zona EEZ",
+  values = c(
+      "Galápagos" = gfw_palettes$map_presence_dark[3],
+      "Ecuador" = gfw_palettes$primary[1],
+      "Fuera de EEZ" = gfw_palettes$primary[2]
+  ),
+  breaks = c("Ecuador", "Fuera de EEZ", "Galápagos"),
+  drop = FALSE
+)
+
+mapa1 <- vmsEncuentros +
+  escala_zona +
+  #guia_zona +
+  labs(title = "Encuentros en VMS") +
+  theme(
+    legend.position = "bottom",
+    plot.title = element_text(size = 11, face = "bold", hjust = 0.5),
+    plot.margin = std_plot_margin
+  )
+
+mapa2 <- aisEncuentros +
+  escala_zona +
+  #guia_zona +
+  labs(title = "Encuentros en AIS") +
+  theme(
+    legend.position = "none",
+    plot.title = element_text(size = 11, face = "bold", hjust = 0.5),
+    plot.margin = std_plot_margin
+  )
+
+figura_final <- mapa1 + mapa2 +
+  plot_layout(ncol = 2) 
+figura_final
+```
+
+#### Tabla de Encuentros
+
+```{r}
+vmsEcuentrosTabla <-encuentros %>% 
+  group_by(year, area_nombre) %>% 
+  summarise(n = n(), .groups = "drop") %>% 
+  pivot_wider(
+    names_from = area_nombre,
+    values_from = n,
+    values_fill = 0   # 👈 importante para evitar NA
+  ) %>% 
+  mutate(Total = rowSums(across(-year))) %>% 
+  select(1, 2, 4, 3, 5) #%>% 
+  #kable()
+
+
+aisEcuentrosTabla <- eventos %>% 
+  filter(eventType == "encounter") %>% 
+  group_by(year, eez_label) %>% 
+  summarise(n = n(), .groups = "drop") %>% 
+  pivot_wider(
+    names_from = eez_label,
+    values_from = n,
+    values_fill = 0   # 👈 importante para evitar NA
+  ) %>% 
+  mutate(Total = rowSums(across(-year))) #%>% 
+  #select(1, 2, 4, 3, 5) %>% 
+  #kable()
+
+merge(vmsEcuentrosTabla, aisEcuentrosTabla, by="year", all=T) %>% 
+                    kable()
+
+```
+
+
+### Derivas
+
+```{r}
+
+derivas <- derivas %>%
+  mutate(area_nombre = case_when(
+    MRGID == 8403 ~ "Galápagos",
+    MRGID == 8431 ~ "Ecuador",
+    is.na(MRGID)  ~ "Fuera de EEZ"
+  ),
+    year = year(event_start)
+  )
+
+```
+
+#### Mapa de derivas
+
+```{r}
+vmsDerivas <- gfw_map(theme = 'dark', res = 10, eezs = TRUE) +
+  coord_sf(xlim = c(-95, -77), ylim = c(-5, 5), crs = 4326) +
+  geom_point(data = derivas %>% filter(year < 2026 ),
+             aes(x = lon_mean, 
+                 y = lat_mean, 
+                 col = area_nombre),
+             size = 0.001,
+             show.legend = TRUE) +
+
+  scale_color_manual(
+    name = "Zona EEZ",
+    values = c(
+      "Galápagos" = gfw_palettes$map_presence_dark[3],
+      "Ecuador" = gfw_palettes$primary[1],
+      "Fuera de EEZ" = gfw_palettes$primary[2]
+    )
+  ) +
+  guides(
+    color = guide_legend(
+      override.aes = list(size = 3)   
+    )
+  ) +
+  theme(
+    axis.title = element_text(size = 9),
+    axis.title.x = element_text(margin = margin(t = 4, unit = "pt")), 
+    axis.text = element_text(size = 9),
+    axis.text.x = element_text(size = 9, angle = 45, hjust = 1),
+    axis.text.y = element_text(size = 9),
+    axis.ticks.y = element_line(color = "white"),
+    strip.text = element_text(size = 9, face = "bold"),
+    legend.position = "bottom",
+    legend.key.width = unit(0.6, "cm")
+  ) +
+  labs(x = "Longitud", y = "Latitud") +
+  facet_wrap(~year)
+```
+
+
+Agregamos las derivas en AIS y hacemos un mapa unico
+
+
+```{r}
+aisDerivas <- gfw_map(theme = 'dark', res = 10, eezs = TRUE) +
+  coord_sf(xlim = c(-95, -77), ylim = c(-5, 5), crs = 4326) +
+  geom_point(data = eventos %>% filter(eventType == "loitering"),
+             aes(x = lon, 
+                 y = lat, 
+                 col = eez_label),
+             size = 0.001,
+             show.legend = TRUE) +
+  scale_color_manual(
+    name = "Zona EEZ",
+    values = c(
+      "Galápagos" = gfw_palettes$map_presence_dark[3],
+      "Ecuador" = gfw_palettes$primary[1],
+      "Fuera de EEZ" = gfw_palettes$primary[2]
+    )
+  ) +
+  guides(
+    color = guide_legend(
+      override.aes = list(size = 3)   
+    )
+  ) +
+  theme(
+    axis.title = element_text(size = 9),
+    axis.title.x = element_text(margin = margin(t = 4, unit = "pt")), 
+    axis.text = element_text(size = 9),
+    axis.text.x = element_text(size = 9, angle = 45, hjust = 1),
+    axis.text.y = element_text(size = 9),
+    axis.ticks.y = element_line(color = "white"),
+    strip.text = element_text(size = 9, face = "bold"),
+    legend.position = "none",
+    legend.key.width = unit(0.6, "cm")
+  ) +
+  labs(x = "Longitud", y = "Latitud") +
+  facet_wrap(~year)
+```
+
+```{r fig.width=7, fig.height=4.2}
+
+mapa1 <- vmsDerivas +
+  escala_zona +
+  #guia_zona +
+  labs(title = "Derivas en VMS") +
+  theme(
+    legend.position = "bottom",
+    plot.title = element_text(size = 11, face = "bold", hjust = 0.5),
+    plot.margin = std_plot_margin
+  )
+
+mapa2 <- aisDerivas +
+  escala_zona +
+  #guia_zona +
+  labs(title = "Derivas en AIS") +
+  theme(
+    legend.position = "none",
+    plot.title = element_text(size = 11, face = "bold", hjust = 0.5),
+    plot.margin = std_plot_margin
+  )
+
+figura_final <- mapa1 + mapa2 +
+  plot_layout(ncol = 2) 
+figura_final
+```
+
+
+
+#### Tabla de derivas
+
+```{r}
+vmsDerivasTabla <- derivas %>% 
+  group_by(year, area_nombre) %>% 
+  summarise(n = n(), .groups = "drop") %>% 
+  pivot_wider(
+    names_from = area_nombre,
+    values_from = n,
+    values_fill = 0   # 👈 importante para evitar NA
+  ) %>% 
+  mutate(Total = rowSums(across(-year))) %>% 
+  select(1, 2, 4, 3, 5) 
+
+aisDerivasTabla <- eventos %>% 
+  filter(eventType == "loitering") %>% 
+  group_by(year, eez_label) %>% 
+  summarise(n = n(), .groups = "drop") %>% 
+  pivot_wider(
+    names_from = eez_label,
+    values_from = n,
+    values_fill = 0   # 👈 importante para evitar NA
+  ) %>% 
+  mutate(Total = rowSums(across(-year))) #%>% 
+  #select(1, 2, 4, 3, 5) %>% 
+  #kable()
+
+merge(vmsDerivasTabla, aisDerivasTabla, by="year", all=T) %>% 
+                    kable()
+
+```
+
+
+### Visitas a puerto
+
+```{r}
+
+portVisits <- portVisits %>%
+  mutate(area_nombre = case_when(
+    MRGID == 8403 ~ "Galápagos",
+    lat_mean > -3.29 & lat_mean < 1.56 & lon_mean > -85 ~ "Ecuador",
+    is.na(MRGID)  ~ "Fuera de EEZ"
+  ),
+    year = year(event_start)
+  ) %>% 
+  filter(year < 2026)
+
+mapPortVisits <- portVisits %>% 
+  group_by(puerto, area_nombre) %>% 
+  summarise(n = n(),
+            meanLat = mean(lat_mean, na.rm=T),
+            meanLon = mean(lon_mean, na.rm=T))
+
+```
+
+#### Mapa de visitas a puerto
+
+```{r}
+vmsPort <- gfw_map(theme = 'dark', res = 10, eezs = TRUE) +
+  coord_sf(xlim = c(-95, -77), ylim = c(-5, 5), crs = 4326) +
+  geom_point(data = mapPortVisits,
+             aes(x = meanLon, 
+                 y = meanLat, 
+                 col = area_nombre,
+                 size = n),      # <-- mapear dentro de aes()
+             alpha = .4,
+             show.legend = TRUE) +
+
+  scale_size_continuous(
+    name = "Número de visitas",
+    range = c(1, 10)   # tamaño mínimo y máximo de los puntos
+  ) +
+  scale_color_manual(
+    name = "Zona EEZ",
+    values = c(
+      "Galápagos" = gfw_palettes$map_presence_dark[3],
+      "Ecuador" = gfw_palettes$primary[1],
+      "Fuera de EEZ" = gfw_palettes$primary[2]
+    )
+  ) +
+guides(size = guide_legend(
+                override.aes = list(color = "#3182bd",  alpha = 0.7)
+                        ),
+  color = guide_legend(override.aes = list(size = 3)))+
+
+  theme(
+    axis.title = element_text(size = 9),
+    axis.title.x = element_text(margin = margin(t = 4, unit = "pt")), 
+    axis.text = element_text(size = 9),
+    axis.text.x = element_text(size = 9, angle = 45, hjust = 1),
+    axis.text.y = element_text(size = 9),
+    axis.ticks.y = element_line(color = "white"),
+    strip.text = element_text(size = 9),
+  legend.position = "bottom",
+  legend.box = "vertical",
+  legend.key.width = unit(0.4, "cm"),
+  legend.spacing.x = unit(0.2, "cm"),
+  legend.text = element_text(size = 9),
+  legend.title = element_text(size = 9)
+  ) +
+  labs(x = "Longitud", y = "Latitud")
+```
+
+Agregamos los puertos en AIS y hacemos un mapa unico
+
+
+```{r}
+aisPort <- gfw_map(theme = 'dark', res = 10, eezs = TRUE) +
+  coord_sf(xlim = c(-95, -77), ylim = c(-5, 5), crs = 4326) +
+  geom_point(data = eventos %>% filter(eventType == "port_visit"),
+             aes(x = lon, 
+                 y = lat, 
+                 col = eez_label),
+             size = 0.001,
+             show.legend = TRUE) +
+  scale_color_manual(
+    name = "Zona EEZ",
+    values = c(
+      "Galápagos" = gfw_palettes$map_presence_dark[3],
+      "Ecuador" = gfw_palettes$primary[1],
+      "Fuera de EEZ" = gfw_palettes$primary[2]
+    )
+  ) +
+  guides(
+    color = guide_legend(
+      override.aes = list(size = 3)   
+    )
+  ) +
+  theme(
+    axis.title = element_text(size = 9),
+    axis.title.x = element_text(margin = margin(t = 4, unit = "pt")), 
+    axis.text = element_text(size = 9),
+    axis.text.x = element_text(size = 9, angle = 45, hjust = 1),
+    axis.text.y = element_text(size = 9),
+    axis.ticks.y = element_line(color = "white"),
+    strip.text = element_text(size = 9, face = "bold"),
+    legend.position = "none",
+    legend.key.width = unit(0.6, "cm")
+  ) +
+  labs(x = "Longitud", y = "Latitud")# +
+  #facet_wrap(~year)
+```
+
+```{r fig.width=7, fig.height=4.2}
+
+mapa1 <- vmsPort +
+  escala_zona +
+  #guia_zona +
+  labs(title = "Visitar a puerto en VMS") +
+  theme(
+    legend.position = "bottom",
+    plot.title = element_text(size = 11, face = "bold", hjust = 0.5),
+    plot.margin = std_plot_margin
+  )
+
+mapa2 <- aisPort +
+  escala_zona +
+  #guia_zona +
+  labs(title = "Visitas a puerto en AIS") +
+  theme(
+    legend.position = "none",
+    plot.title = element_text(size = 11, face = "bold", hjust = 0.5),
+    plot.margin = std_plot_margin
+  )
+
+figura_final <- mapa1 + mapa2 +
+  plot_layout(ncol = 2) 
+figura_final
+```
+
+
+
+#### Tabla de visitas a puerto
+
+```{r}
+top10_puertos <- portVisits %>% 
+  count(puerto, sort = TRUE) %>% 
+  slice_head(n = 10) %>% 
+  pull(puerto)
+
+portVisits %>% 
+  filter(puerto %in% top10_puertos) %>% 
+  group_by(year, area_nombre, puerto) %>% 
+  summarise(n = n(), .groups = "drop") %>% 
+  pivot_wider(
+    names_from = c(area_nombre, puerto),
+    values_from = n,
+    values_fill = 0
+  ) %>% 
+  mutate(
+    Total = rowSums(across(where(is.numeric) & !all_of("year")), 
+                    na.rm = TRUE)
+  ) %>% 
+  #arrange(desc(Total)) %>% 
+  select(year, everything()) %>% 
+  kable()
+
+eventos %>% 
+  filter(eventType == "port_visit") %>% 
+  group_by(year, eez_label) %>% 
+  summarise(n = n(), .groups = "drop") %>% 
+  pivot_wider(
+    names_from = eez_label,
+    values_from = n,
+    values_fill = 0   # 👈 importante para evitar NA
+  ) %>% 
+  mutate(Total = rowSums(across(-year))) #%>% 
+  #select(1, 2, 4, 3, 5) %>% 
+
+
+vmsPortCountry <- eventos %>% 
+  filter(eventType == "port_visit") %>% 
+  group_by(vessel_flag, eez_label) %>% 
+  summarise(n = n(), .groups = "drop") %>% 
+  pivot_wider(
+    names_from = eez_label,
+    values_from = n,
+    values_fill = 0   # 👈 importante para evitar NA
+  ) #%>% 
+  #mutate(Total = rowSums(across(-year))) #%>% 
+  #select(1, 2, 4, 3, 5) %>% 
+
+write.csv(vmsPortCountry, file="~/Downloads/ais_puertos_flag.csv")
+```
+
+
+### GAPs
+
+```{r fig.width=7, fig.height=4.2, cache=FALSE}
+
+gaps <- gaps %>%
+  mutate(area_nombre = case_when(
+    MRGID == 8403 ~ "Galápagos",
+    MRGID == 8431 ~ "Ecuador",
+    is.na(MRGID)  ~ "Fuera de EEZ"
+  ),
+    year = year(event_start),
+  h = round(duration_h),
+  largo = if_else(h > 24, 1, 0)
+  )
+
+temp <- gaps %>% 
+          mutate(h = round(duration_h),
+                  year = year(event_start)) %>% 
+          group_by(year, h) %>% 
+          summarise(n = n())
+
+ggplot(temp %>% filter(h <= 30), aes(x = h, y = n)) +
+  geom_col(width = 1, 
+           #col=gfw_palettes$primary[1],
+           fill=gfw_palettes$primary[1], alpha=.6) +
+  #facet_wrap(~ year, ncol=2) +
+  #scale_x_continuous(breaks = seq(0, 23, 3)) +
+  labs(
+    x = "Duracion (hr)",
+    y = "Número de observaciones"
+  ) +
+  theme(plot.margin = std_plot_margin)
+
+```
+
+#### Mapa de GAPs
+
+```{r}
+vmsGaps <- gfw_map(theme = 'dark', res = 10, eezs = TRUE) +
+  coord_sf(xlim = c(-95, -77), ylim = c(-5, 5), crs = 4326) +
+    geom_segment(data = gaps %>% filter(h > 4 & h < 30, year < 2026), aes(x = lon_min, y = lat_min,
+                 xend = lon_max, yend = lat_max,
+                 color = area_nombre),
+               arrow = arrow(length = unit(0.01, "cm")),
+               alpha = .01) +
+  scale_color_manual(
+    name = "Zona EEZ",
+    values = c(
+      "Galápagos" = gfw_palettes$map_presence_dark[3],
+      "Ecuador" = gfw_palettes$primary[1],
+      "Fuera de EEZ" = gfw_palettes$primary[2]
+    )
+  ) +
+  guides(
+    color = guide_legend(
+      override.aes = list(size = 3)   
+    )
+  ) +
+  theme(
+    axis.title = element_text(size = 9),
+    axis.title.x = element_text(margin = margin(t = 4, unit = "pt")), 
+    axis.text = element_text(size = 9),
+    axis.text.x = element_text(size = 9, angle = 45, hjust = 1),
+    axis.text.y = element_text(size = 9),
+    axis.ticks.y = element_line(color = "white"),
+    strip.text = element_text(size = 9, face = "bold"),
+    legend.position = "none",
+    legend.key.width = unit(0.6, "cm")
+  ) +
+  labs(x = "Longitud", y = "Latitud") +
+  facet_wrap(~year)
+```
+
+
+Agregamos los gaps en AIS y hacemos un mapa unico
+
+```{r cache=FALSE}
+aisGapslatlon <- eventos %>%
+  filter(eventType == "gap") %>%
+  mutate(
+    duration_hours = map_dbl(event_info, ~ parse_number(
+      as.character(pluck(.x, "durationHours", .default = NA_character_)))),
+    lat_off = map_dbl(event_info, ~ parse_number(
+      as.character(pluck(.x, "offPosition", "lat", .default = NA_character_))
+    )),
+    lon_off = map_dbl(event_info, ~ parse_number(
+      as.character(pluck(.x, "offPosition", "lon", .default = NA_character_))
+    )),
+    lat_on = map_dbl(event_info, ~ parse_number(
+      as.character(pluck(.x, "onPosition", "lat", .default = NA_character_))
+    )),
+    lon_on = map_dbl(event_info, ~ parse_number(
+      as.character(pluck(.x, "onPosition", "lon", .default = NA_character_))
+    ))
+  )
+
+aisGapsPlotData <- aisGapslatlon %>% 
+  filter(duration_hours > 4 & duration_hours < 30)
+```
+
+```{r cache=FALSE}
+aisGaps <- gfw_map(theme = 'dark', res = 10, eezs = TRUE) +
+  coord_sf(xlim = c(-95, -77), ylim = c(-5, 5), crs = 4326) +
+  geom_segment(data = aisGapsPlotData, 
+               aes(x = lon_off, y = lat_off,
+               xend = lon_on, yend = lat_on,
+               color = eez_label),
+               arrow = arrow(length = unit(0.05, "cm")),
+               alpha = .01) +
+  scale_color_manual(
+    name = "Zona EEZ",
+    values = c(
+      "Galápagos" = gfw_palettes$map_presence_dark[3],
+      "Ecuador" = gfw_palettes$primary[1],
+      "Fuera de EEZ" = gfw_palettes$primary[2]
+    )
+  ) +
+  guides(
+    color = guide_legend(
+      override.aes = list(size = 3)   
+    )
+  ) +
+  theme(
+    axis.title = element_text(size = 9),
+    axis.title.x = element_text(margin = margin(t = 4, unit = "pt")), 
+    axis.text = element_text(size = 9),
+    axis.text.x = element_text(size = 9, angle = 45, hjust = 1),
+    axis.text.y = element_text(size = 9),
+    axis.ticks.y = element_line(color = "white"),
+    strip.text = element_text(size = 9, face = "bold"),
+    legend.position = "none",
+    legend.key.width = unit(0.6, "cm")
+  ) +
+  labs(x = "Longitud", y = "Latitud") +
+  facet_wrap(~year)
+```
+
+```{r fig.width=7, fig.height=4.2}
+
+mapa1 <- vmsGaps +
+  escala_zona +
+  #guia_zona +
+  labs(title = "Discontinuidades en VMS") +
+  theme(
+    legend.position = "bottom",
+    plot.title = element_text(size = 11, face = "bold", hjust = 0.5),
+    plot.margin = std_plot_margin
+  )
+
+mapa2 <- aisGaps +
+  escala_zona +
+  #guia_zona +
+  labs(title = "Discontinuidades en AIS") +
+  theme(
+    legend.position = "none",
+    plot.title = element_text(size = 11, face = "bold", hjust = 0.5),
+    plot.margin = std_plot_margin
+  )
+
+figura_final <- mapa1 + mapa2 +
+  plot_layout(ncol = 2) 
+figura_final
+```
+
+#### Tabla resumen de GAPs
+
+```{r}
+vmsGapsTabla <- gaps %>% 
+  filter(h > 4 & h < 30, year < 2026) %>% 
+  group_by(year, area_nombre) %>% 
+  summarise(n = n(), .groups = "drop") %>% 
+  pivot_wider(
+    names_from = area_nombre,
+    values_from = n,
+    values_fill = 0 
+  ) %>% 
+  mutate(Total = rowSums(across(-year))) %>% 
+  select(1, 2, 4, 3, 5) 
+
+
+aisGapsTabla <- aisGapslatlon %>% 
+    filter(duration_hours > 4 & duration_hours < 30) %>% 
+    group_by(year, eez_label) %>% 
+  summarise(n = n(), .groups = "drop") %>% 
+  pivot_wider(
+    names_from = eez_label,
+    values_from = n,
+    values_fill = 0   # 👈 importante para evitar NA
+  ) %>% 
+  mutate(Total = rowSums(across(-year))) #%>% 
+  #select(1, 2, 4, 3, 5) %>% 
+  #kable()
+
+merge(vmsGapsTabla, aisGapsTabla, by="year", all=T) %>% 
+                    kable()
+
+
+
+```

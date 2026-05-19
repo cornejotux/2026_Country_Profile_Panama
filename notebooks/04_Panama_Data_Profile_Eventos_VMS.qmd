@@ -1,5 +1,5 @@
 ---
-title: "Explorando datos de Ecuador con gfwR"
+title: "Explorando datos de Panamá con gfwR"
 author: Jorge F. Cornejo-Donoso
 date: last-modified
 date-format: "MMMM DD, YYYY"
@@ -61,6 +61,8 @@ library(knitr)
 library(kableExtra)
 library(tidyverse)
 library(patchwork)
+library(grid)
+
 
 options(scipen=999, 
         digits = 6,
@@ -103,6 +105,9 @@ gfwT <- theme_gfw() +
 
 theme_set(gfwT)
 
+xlimites = c(-85, -76)
+ylimites = c(4, 13)
+
 ```
 
 ```{r}
@@ -118,9 +123,9 @@ load(file="../data/eezs.rda")
 # library(progress)
 
 # 1) EEZ ids (Ecuador + Galapagos) filtrados a los que quieres
-eezIds <- bind_rows(gfw_region_id("Ecuador"), gfw_region_id("Galapagos")) %>%
+eezIds <- gfw_region_id("Panama") %>%
   distinct(id, .keep_all = TRUE) %>%
-  filter(id %in% c(8403, 8431))
+  filter(id %in% c(8423))
 
 years <- 2020:2025
 event_types <- c("ENCOUNTER", "GAP", "LOITERING", "PORT_VISIT")
@@ -251,7 +256,7 @@ WITH encu AS (
     mean_latitude, 
     mean_longitude,
     ST_GEOGPOINT(mean_longitude, mean_latitude) AS point
-  FROM `global-fishing-watch.pipe_vms_ecu_v4_published.encounters`
+  FROM `global-fishing-watch.pipe_vms_pan_v4_published.encounters`
 ),
 
 eez AS ( 
@@ -260,7 +265,7 @@ eez AS (
     GEONAME, 
     ST_GEOGFROMTEXT(wkt) AS geom
   FROM `world-fishing-827.ocean_shapefiles_all_purpose.marine_regions_v11`
-  WHERE MRGID IN (8403, 8431)
+  WHERE MRGID IN (8423)
 )
 
 SELECT 
@@ -290,7 +295,7 @@ WITH encu AS (
     event_type, vessel_id, event_start, event_end, lat_mean, lon_mean, 
         SAFE_CAST(JSON_VALUE(event_info, '$.loitering_hours') AS FLOAT64) AS h,
         ST_GEOGPOINT(lon_mean, lat_mean) AS point
-FROM `global-fishing-watch.pipe_vms_ecu_v4_published.product_events_loitering`
+FROM `global-fishing-watch.pipe_vms_pan_v4_published.product_events_loitering`
 where SAFE_CAST(JSON_VALUE(event_info, '$.loitering_hours') AS FLOAT64) >= 1 
       and SAFE_CAST(JSON_VALUE(event_info, '$.loitering_hours') AS FLOAT64) <= 30
 ),
@@ -301,7 +306,7 @@ eez AS (
     GEONAME, 
     ST_GEOGFROMTEXT(wkt) AS geom
   FROM `world-fishing-827.ocean_shapefiles_all_purpose.marine_regions_v11`
-  WHERE MRGID IN (8403, 8431)
+  WHERE MRGID IN (8423)
 )
 
 SELECT 
@@ -334,7 +339,7 @@ SELECT event_type, JSON_VALUE(event_info, '$.start_anchorage.flag') AS pais,
   JSON_VALUE(event_info, '$.start_anchorage.name') AS puerto,
   vessel_id, event_start, event_end, lat_mean, lon_mean,
   regions_mean_position.eez,  ST_GEOGPOINT(lon_mean, lat_mean) AS point
-  FROM `global-fishing-watch.pipe_vms_ecu_v4_published.product_events_port_visit`
+  FROM `global-fishing-watch.pipe_vms_pan_v4_published.product_events_port_visit`
 ),
 
 eez AS ( 
@@ -343,7 +348,7 @@ eez AS (
     GEONAME, 
     ST_GEOGFROMTEXT(wkt) AS geom
   FROM `world-fishing-827.ocean_shapefiles_all_purpose.marine_regions_v11`
-  WHERE MRGID IN (8403, 8431)
+  WHERE MRGID IN (8423)
 )
 
 SELECT 
@@ -364,8 +369,6 @@ save(portVisits, file="../data/portVisits_vms.rda")
 ```
 
 
-
-
 ### Gaps
 
 ```{r eval=F}
@@ -380,7 +383,7 @@ WITH encu AS (
     JSON_VALUE(event_info, '$.vessel_class') AS vessel_class,
     ST_GEOGPOINT(lon_min, lat_min) AS point1,
     ST_GEOGPOINT(lon_max, lat_max) AS point2
-  FROM `global-fishing-watch.pipe_vms_ecu_v4_published.product_events_vms_gap`
+  FROM `global-fishing-watch.pipe_vms_pan_v4_published.product_events_vms_gap`
 ),
 
 eez AS ( 
@@ -389,7 +392,7 @@ eez AS (
     GEONAME, 
     ST_GEOGFROMTEXT(wkt) AS geom
   FROM `world-fishing-827.ocean_shapefiles_all_purpose.marine_regions_v11`
-  WHERE MRGID IN (8403, 8431)
+  WHERE MRGID IN (8423)
 )
 
 SELECT
@@ -428,12 +431,13 @@ load(file="../data/gaps_vms.rda")
 
 encuentros <- encuentros %>%
   mutate(area_nombre = case_when(
-    MRGID == 8403 ~ "Galápagos",
-    MRGID == 8431 ~ "Ecuador",
+    MRGID == 8423 ~ "Panamá",
     is.na(MRGID)  ~ "Fuera de EEZ"
   ),
     year = year(start_time)
-  )
+  ) %>% 
+    filter(year >= 2020, 
+         year <= 2025)
 
 ```
 
@@ -441,7 +445,7 @@ encuentros <- encuentros %>%
 
 ```{r}
 vmsEncuentros <- gfw_map(theme = 'dark', res = 10, eezs = TRUE) +
-  coord_sf(xlim = c(-95, -77), ylim = c(-5, 5), crs = 4326) +
+  #coord_sf(xlim = xlimites, ylim = ylimites, crs = 4326) +
   geom_point(data = encuentros,
              aes(x = mean_longitude, 
                  y = mean_latitude, 
@@ -452,8 +456,8 @@ vmsEncuentros <- gfw_map(theme = 'dark', res = 10, eezs = TRUE) +
   scale_color_manual(
     name = "Zona EEZ",
     values = c(
-      "Galápagos" = gfw_palettes$map_presence_dark[3],
-      "Ecuador" = gfw_palettes$primary[1],
+      "Panamá" = gfw_palettes$map_presence_dark[3],
+      #"Ecuador" = gfw_palettes$primary[1],
       "Fuera de EEZ" = gfw_palettes$primary[2]
     )
   ) +
@@ -479,12 +483,13 @@ Agregamos los encuentros en AIS y hacemos un mapa unico
 
 
 ```{r}
-eventos <- eventos %>% 
-            mutate(eez_label = if_else(eez_label == "Galapagos", "Galápagos", eez_label))
+encountersAIS <- eventos %>% 
+                  filter(!is.na(eventId), 
+                         event_type == "ENCOUNTER")
 
 aisEncuentros <- gfw_map(theme = 'dark', res = 10, eezs = TRUE) +
-  coord_sf(xlim = c(-95, -77), ylim = c(-5, 5), crs = 4326) +
-  geom_point(data = eventos %>% filter(eventType == "encounter"),
+  coord_sf(xlim = xlimites, ylim = ylimites, crs = 4326) +
+  geom_point(data = encountersAIS,
              aes(x = lon, 
                  y = lat, 
                  col = eez_label),
@@ -493,8 +498,8 @@ aisEncuentros <- gfw_map(theme = 'dark', res = 10, eezs = TRUE) +
   scale_color_manual(
     name = "Zona EEZ",
     values = c(
-      "Galápagos" = gfw_palettes$map_presence_dark[3],
-      "Ecuador" = gfw_palettes$primary[1],
+      "Panamá" = gfw_palettes$map_presence_dark[3],
+      #"Ecuador" = gfw_palettes$primary[1],
       "Fuera de EEZ" = gfw_palettes$primary[2]
     )
   ) +
@@ -522,11 +527,12 @@ aisEncuentros <- gfw_map(theme = 'dark', res = 10, eezs = TRUE) +
 escala_zona <- scale_color_manual(
   name = "Zona EEZ",
   values = c(
-      "Galápagos" = gfw_palettes$map_presence_dark[3],
-      "Ecuador" = gfw_palettes$primary[1],
+      "Panamá" = gfw_palettes$map_presence_dark[3],
+      "Panama" = gfw_palettes$map_presence_dark[3],
+      #"Ecuador" = gfw_palettes$primary[1],
       "Fuera de EEZ" = gfw_palettes$primary[2]
   ),
-  breaks = c("Ecuador", "Fuera de EEZ", "Galápagos"),
+  breaks = c("Panamá", "Galápagos"),
   drop = FALSE
 )
 
@@ -550,9 +556,8 @@ mapa2 <- aisEncuentros +
     plot.margin = std_plot_margin
   )
 
-figura_final <- mapa1 + mapa2 +
-  plot_layout(ncol = 2) 
-figura_final
+mapa1 
+mapa2 
 ```
 
 #### Tabla de Encuentros
@@ -566,13 +571,10 @@ vmsEcuentrosTabla <-encuentros %>%
     values_from = n,
     values_fill = 0   # 👈 importante para evitar NA
   ) %>% 
-  mutate(Total = rowSums(across(-year))) %>% 
-  select(1, 2, 4, 3, 5) #%>% 
-  #kable()
+  mutate(Total = rowSums(across(-year))) 
 
-
-aisEcuentrosTabla <- eventos %>% 
-  filter(eventType == "encounter") %>% 
+aisEcuentrosTabla <- encountersAIS %>% 
+  #filter(eventType == "encounter") %>% 
   group_by(year, eez_label) %>% 
   summarise(n = n(), .groups = "drop") %>% 
   pivot_wider(
@@ -596,12 +598,14 @@ merge(vmsEcuentrosTabla, aisEcuentrosTabla, by="year", all=T) %>%
 
 derivas <- derivas %>%
   mutate(area_nombre = case_when(
-    MRGID == 8403 ~ "Galápagos",
-    MRGID == 8431 ~ "Ecuador",
+    MRGID == 8423 ~ "Panamá",
+    #MRGID == 8431 ~ "Ecuador",
     is.na(MRGID)  ~ "Fuera de EEZ"
   ),
     year = year(event_start)
-  )
+  ) %>% 
+    filter(year >= 2020,
+         year <= 2025)
 
 ```
 
@@ -609,7 +613,7 @@ derivas <- derivas %>%
 
 ```{r}
 vmsDerivas <- gfw_map(theme = 'dark', res = 10, eezs = TRUE) +
-  coord_sf(xlim = c(-95, -77), ylim = c(-5, 5), crs = 4326) +
+  #coord_sf(xlim = xlimites, ylim = ylimites, crs = 4326) +
   geom_point(data = derivas %>% filter(year < 2026 ),
              aes(x = lon_mean, 
                  y = lat_mean, 
@@ -620,8 +624,9 @@ vmsDerivas <- gfw_map(theme = 'dark', res = 10, eezs = TRUE) +
   scale_color_manual(
     name = "Zona EEZ",
     values = c(
-      "Galápagos" = gfw_palettes$map_presence_dark[3],
-      "Ecuador" = gfw_palettes$primary[1],
+      "Panamá" = gfw_palettes$map_presence_dark[3],
+      "Panama" = gfw_palettes$map_presence_dark[3],
+      #"Ecuador" = gfw_palettes$primary[1],
       "Fuera de EEZ" = gfw_palettes$primary[2]
     )
   ) +
@@ -650,9 +655,15 @@ Agregamos las derivas en AIS y hacemos un mapa unico
 
 
 ```{r}
+
+derivasAIS <- eventos %>% 
+                  filter(!is.na(start), 
+                         event_type == "LOITERING") %>% 
+              mutate(year = factor(year, levels = 2020:2025))
+
 aisDerivas <- gfw_map(theme = 'dark', res = 10, eezs = TRUE) +
-  coord_sf(xlim = c(-95, -77), ylim = c(-5, 5), crs = 4326) +
-  geom_point(data = eventos %>% filter(eventType == "loitering"),
+  coord_sf(xlim = xlimites, ylim = ylimites, crs = 4326) +
+  geom_point(data = derivasAIS,
              aes(x = lon, 
                  y = lat, 
                  col = eez_label),
@@ -661,8 +672,9 @@ aisDerivas <- gfw_map(theme = 'dark', res = 10, eezs = TRUE) +
   scale_color_manual(
     name = "Zona EEZ",
     values = c(
-      "Galápagos" = gfw_palettes$map_presence_dark[3],
-      "Ecuador" = gfw_palettes$primary[1],
+      "Panamá" = gfw_palettes$map_presence_dark[3],
+      "Panama" = gfw_palettes$map_presence_dark[3],
+      #"Ecuador" = gfw_palettes$primary[1],
       "Fuera de EEZ" = gfw_palettes$primary[2]
     )
   ) +
@@ -683,7 +695,7 @@ aisDerivas <- gfw_map(theme = 'dark', res = 10, eezs = TRUE) +
     legend.key.width = unit(0.6, "cm")
   ) +
   labs(x = "Longitud", y = "Latitud") +
-  facet_wrap(~year)
+  facet_wrap(~year, drop= FALSE)
 ```
 
 ```{r fig.width=7, fig.height=4.2}
@@ -708,9 +720,11 @@ mapa2 <- aisDerivas +
     plot.margin = std_plot_margin
   )
 
-figura_final <- mapa1 + mapa2 +
-  plot_layout(ncol = 2) 
-figura_final
+#figura_final <- 
+mapa1 
+mapa2 #+
+#  plot_layout(ncol = 2) 
+#figura_final
 ```
 
 
@@ -726,8 +740,7 @@ vmsDerivasTabla <- derivas %>%
     values_from = n,
     values_fill = 0   # 👈 importante para evitar NA
   ) %>% 
-  mutate(Total = rowSums(across(-year))) %>% 
-  select(1, 2, 4, 3, 5) 
+  mutate(Total = rowSums(across(-year)))
 
 aisDerivasTabla <- eventos %>% 
   filter(eventType == "loitering") %>% 
@@ -754,13 +767,13 @@ merge(vmsDerivasTabla, aisDerivasTabla, by="year", all=T) %>%
 
 portVisits <- portVisits %>%
   mutate(area_nombre = case_when(
-    MRGID == 8403 ~ "Galápagos",
-    lat_mean > -3.29 & lat_mean < 1.56 & lon_mean > -85 ~ "Ecuador",
+    MRGID == 8423 ~ "Panamá",
     is.na(MRGID)  ~ "Fuera de EEZ"
   ),
     year = year(event_start)
   ) %>% 
-  filter(year < 2026)
+  filter(year >= 2020,
+         year <= 2025)
 
 mapPortVisits <- portVisits %>% 
   group_by(puerto, area_nombre) %>% 
@@ -774,7 +787,7 @@ mapPortVisits <- portVisits %>%
 
 ```{r}
 vmsPort <- gfw_map(theme = 'dark', res = 10, eezs = TRUE) +
-  coord_sf(xlim = c(-95, -77), ylim = c(-5, 5), crs = 4326) +
+  #coord_sf(xlim = xlimites, ylim = ylimites, crs = 4326) +
   geom_point(data = mapPortVisits,
              aes(x = meanLon, 
                  y = meanLat, 
@@ -790,8 +803,8 @@ vmsPort <- gfw_map(theme = 'dark', res = 10, eezs = TRUE) +
   scale_color_manual(
     name = "Zona EEZ",
     values = c(
-      "Galápagos" = gfw_palettes$map_presence_dark[3],
-      "Ecuador" = gfw_palettes$primary[1],
+      "Panamá" = gfw_palettes$map_presence_dark[3],
+      "Panama" = gfw_palettes$map_presence_dark[3],
       "Fuera de EEZ" = gfw_palettes$primary[2]
     )
   ) +
@@ -823,7 +836,7 @@ Agregamos los puertos en AIS y hacemos un mapa unico
 
 ```{r}
 aisPort <- gfw_map(theme = 'dark', res = 10, eezs = TRUE) +
-  coord_sf(xlim = c(-95, -77), ylim = c(-5, 5), crs = 4326) +
+  coord_sf(xlim = xlimites, ylim = ylimites, crs = 4326) +
   geom_point(data = eventos %>% filter(eventType == "port_visit"),
              aes(x = lon, 
                  y = lat, 
@@ -833,8 +846,8 @@ aisPort <- gfw_map(theme = 'dark', res = 10, eezs = TRUE) +
   scale_color_manual(
     name = "Zona EEZ",
     values = c(
-      "Galápagos" = gfw_palettes$map_presence_dark[3],
-      "Ecuador" = gfw_palettes$primary[1],
+      "Panamá" = gfw_palettes$map_presence_dark[3],
+      "Panama" = gfw_palettes$map_presence_dark[3],
       "Fuera de EEZ" = gfw_palettes$primary[2]
     )
   ) +
@@ -947,8 +960,7 @@ write.csv(vmsPortCountry, file="~/Downloads/ais_puertos_flag.csv")
 
 gaps <- gaps %>%
   mutate(area_nombre = case_when(
-    MRGID == 8403 ~ "Galápagos",
-    MRGID == 8431 ~ "Ecuador",
+    MRGID == 8423 ~ "Panamá",
     is.na(MRGID)  ~ "Fuera de EEZ"
   ),
     year = year(event_start),
@@ -978,25 +990,117 @@ ggplot(temp %>% filter(h <= 30), aes(x = h, y = n)) +
 
 #### Mapa de GAPs
 
+
 ```{r}
+
+fix_lon <- function(lon) {
+  ((lon + 180) %% 360) - 180
+}
+
+split_antimeridian <- function(data,
+                               lon1 = "lon_min",
+                               lat1 = "lat_min",
+                               lon2 = "lon_max",
+                               lat2 = "lat_max") {
+  
+  data <- data %>% 
+    mutate(
+      lon1_tmp = fix_lon(.data[[lon1]]),
+      lat1_tmp = .data[[lat1]],
+      lon2_tmp = fix_lon(.data[[lon2]]),
+      lat2_tmp = .data[[lat2]],
+      crosses_antimeridian = abs(lon2_tmp - lon1_tmp) > 180,
+      row_id = row_number()
+    )
+  
+  pmap_dfr(data, function(...) {
+    
+    row <- tibble(...)
+    
+    if (!row$crosses_antimeridian) {
+      
+      row %>% 
+        mutate(
+          lon_start_plot = lon1_tmp,
+          lat_start_plot = lat1_tmp,
+          lon_end_plot   = lon2_tmp,
+          lat_end_plot   = lat2_tmp
+        )
+      
+    } else {
+      
+      if (row$lon1_tmp > 0 & row$lon2_tmp < 0) {
+        edge1 <- 180
+        edge2 <- -180
+        lon2_adj <- row$lon2_tmp + 360
+      } else {
+        edge1 <- -180
+        edge2 <- 180
+        lon2_adj <- row$lon2_tmp - 360
+      }
+      
+      frac <- (edge1 - row$lon1_tmp) / (lon2_adj - row$lon1_tmp)
+      
+      lat_edge <- row$lat1_tmp + frac * (row$lat2_tmp - row$lat1_tmp)
+      
+      bind_rows(
+        row %>% 
+          mutate(
+            lon_start_plot = lon1_tmp,
+            lat_start_plot = lat1_tmp,
+            lon_end_plot   = edge1,
+            lat_end_plot   = lat_edge
+          ),
+        row %>% 
+          mutate(
+            lon_start_plot = edge2,
+            lat_start_plot = lat_edge,
+            lon_end_plot   = lon2_tmp,
+            lat_end_plot   = lat2_tmp
+          )
+      )
+    }
+  })
+}
+
+gapsVMS <- gaps %>% 
+  as_tibble() %>% 
+  filter(
+    h > 4 & h < 30, 
+    year >= 2020,
+    year <= 2025
+  ) %>% 
+  split_antimeridian(
+    lon1 = "lon_min",
+    lat1 = "lat_min",
+    lon2 = "lon_max",
+    lat2 = "lat_max"
+  )
+
 vmsGaps <- gfw_map(theme = 'dark', res = 10, eezs = TRUE) +
-  coord_sf(xlim = c(-95, -77), ylim = c(-5, 5), crs = 4326) +
-    geom_segment(data = gaps %>% filter(h > 4 & h < 30, year < 2026), aes(x = lon_min, y = lat_min,
-                 xend = lon_max, yend = lat_max,
-                 color = area_nombre),
-               arrow = arrow(length = unit(0.01, "cm")),
-               alpha = .01) +
+  geom_segment(
+    data = gapsVMS,
+    aes(
+      x = lon_start_plot,
+      y = lat_start_plot,
+      xend = lon_end_plot,
+      yend = lat_end_plot,
+      color = area_nombre
+    ),
+    arrow = arrow(length = unit(0.01, "cm")),
+    alpha = .6
+  ) +
   scale_color_manual(
     name = "Zona EEZ",
     values = c(
-      "Galápagos" = gfw_palettes$map_presence_dark[3],
-      "Ecuador" = gfw_palettes$primary[1],
+      "Panamá" = gfw_palettes$map_presence_dark[3],
+      "Panama" = gfw_palettes$map_presence_dark[3],
       "Fuera de EEZ" = gfw_palettes$primary[2]
     )
   ) +
   guides(
     color = guide_legend(
-      override.aes = list(size = 3)   
+      override.aes = list(size = 3)
     )
   ) +
   theme(
@@ -1010,16 +1114,25 @@ vmsGaps <- gfw_map(theme = 'dark', res = 10, eezs = TRUE) +
     legend.position = "none",
     legend.key.width = unit(0.6, "cm")
   ) +
-  labs(x = "Longitud", y = "Latitud") +
+  labs(
+    x = "Longitud",
+    y = "Latitud"
+  ) +
   facet_wrap(~year)
+
+#vmsGaps
 ```
+
+
 
 
 Agregamos los gaps en AIS y hacemos un mapa unico
 
 ```{r cache=FALSE}
+
 aisGapslatlon <- eventos %>%
-  filter(eventType == "gap") %>%
+          filter(event_type == "GAP",
+                 !is.na(start)) %>% 
   mutate(
     duration_hours = map_dbl(event_info, ~ parse_number(
       as.character(pluck(.x, "durationHours", .default = NA_character_)))),
@@ -1043,18 +1156,18 @@ aisGapsPlotData <- aisGapslatlon %>%
 
 ```{r cache=FALSE}
 aisGaps <- gfw_map(theme = 'dark', res = 10, eezs = TRUE) +
-  coord_sf(xlim = c(-95, -77), ylim = c(-5, 5), crs = 4326) +
+  coord_sf(xlim = xlimites, ylim = ylimites, crs = 4326) +
   geom_segment(data = aisGapsPlotData, 
                aes(x = lon_off, y = lat_off,
                xend = lon_on, yend = lat_on,
                color = eez_label),
                arrow = arrow(length = unit(0.05, "cm")),
-               alpha = .01) +
+               alpha = .6) +
   scale_color_manual(
     name = "Zona EEZ",
     values = c(
-      "Galápagos" = gfw_palettes$map_presence_dark[3],
-      "Ecuador" = gfw_palettes$primary[1],
+      "Panamá" = gfw_palettes$map_presence_dark[3],
+      "Panama" = gfw_palettes$map_presence_dark[3],
       "Fuera de EEZ" = gfw_palettes$primary[2]
     )
   ) +
@@ -1100,16 +1213,17 @@ mapa2 <- aisGaps +
     plot.margin = std_plot_margin
   )
 
-figura_final <- mapa1 + mapa2 +
-  plot_layout(ncol = 2) 
-figura_final
+mapa1
+mapa2
 ```
 
 #### Tabla resumen de GAPs
 
 ```{r}
 vmsGapsTabla <- gaps %>% 
-  filter(h > 4 & h < 30, year < 2026) %>% 
+  filter(h > 4 & h < 30, 
+         year >= 2020,
+         year <= 2025) %>% 
   group_by(year, area_nombre) %>% 
   summarise(n = n(), .groups = "drop") %>% 
   pivot_wider(
@@ -1117,8 +1231,7 @@ vmsGapsTabla <- gaps %>%
     values_from = n,
     values_fill = 0 
   ) %>% 
-  mutate(Total = rowSums(across(-year))) %>% 
-  select(1, 2, 4, 3, 5) 
+  mutate(Total = rowSums(across(-year)))
 
 
 aisGapsTabla <- aisGapslatlon %>% 

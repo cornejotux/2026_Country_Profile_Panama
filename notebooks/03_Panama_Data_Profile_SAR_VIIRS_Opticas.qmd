@@ -98,12 +98,21 @@ gfwT <- theme_gfw() +
 
 theme_set(gfwT)
 
+xlimites = c(-85, -76)
+ylimites = c(4, 13)
+
 ```
 
 
 # SAR vessel detections
 
 ```{r eval=F}
+years <- 2012:2026
+n_years <- length(years)
+n_eez <- length(eezIds$id)
+
+eezIds <- distinct(gfw_region_id("Panama")) 
+
 pbA <- progress_bar$new(
   format = "Procesando Year [:bar] :current/:total (:percent) | ETA: :eta",
   total = n_years,
@@ -150,16 +159,16 @@ for (yi in seq_along(years)) {
 
 dataAllEEZ_sar <- do.call(rbind, data_list)
 
-save(dataAllEEZ_sar, file="../data/sar_vesdet_ecuador.rds")
+save(dataAllEEZ_sar, file="../data/sar_vesdet_panama.rds")
 
 ```
 
 
 ```{r}
 load(file="../data/eezs.rda")
-load(file="../data/sar_vesdet_ecuador.rds")
+load(file="../data/sar_vesdet_panama.rds")
 sar <- dataAllEEZ_sar %>% 
-            filter(id %in% c(8431, 8403),
+            filter(id %in% c(8423),
                    year != 2026)
 ```
 
@@ -188,7 +197,7 @@ temp_total <- sar %>%
   
 temp <- temp_year %>% 
   left_join(temp_total, by = "Flag") %>% 
-  arrange(desc(8431)) %>% 
+  arrange(desc(8423)) %>% 
   mutate(
     Flag = countrycode::countrycode(
       Flag,
@@ -217,9 +226,18 @@ mapa_sar <- sar %>%
               summarise(det = sum(Detections, na.rm=T))
 
 ```
+
 ```{r fig.width=7, fig.height=4.8}
+amp_panama <- st_read(
+  "../data/panama_amp_zee/panama_amp_within_eez.gpkg",
+  layer = "panama_amp_within_eez"
+)
+
+  
 gfw_map(theme = 'dark', res = 10, eezs = TRUE) +
-    coord_sf(xlim = c(-95, -77), ylim = c(-5, 5), crs = 4326) +
+    geom_sf(data = amp_panama, col = "white", fill = gfw_palettes$primary[1], alpha = 0) +
+    geom_sf(data = eez_sf, col = "grey", fill = gfw_palettes$primary[1], alpha = 0) +
+    coord_sf(xlim = xlimites, ylim = ylimites, crs = 4326) +
     geom_tile(data = mapa_sar,
               aes(x = Lon, y = Lat, fill = det), show.legend = TRUE) +
     viridis::scale_fill_viridis(limits = c(0.1, 2),
@@ -248,182 +266,91 @@ gfw_map(theme = 'dark', res = 10, eezs = TRUE) +
 # VIIRS
 
 Obtener los datos.
-Para esto descargo desde GFW los datos VIIRS anuales desde 2017 al 2025, para 
-cada EEZ de Ecuador, por Cuadrícula, en CSV, Agrupado por MMSI, con el rango de 
-tiempo completo y con una resolución de 0.01°
+Para esto descargo desde GFW los datos VIIRS anuales desde 2017 al 2025, 
+por Cuadrícula, en CSV, Agrupado por MMSI, con el rango de tiempo completo y con
+una resolución de 0.01°
 
 ```{r eval=F}
 
-# Cambia esta ruta por la tuya
-ruta_zip <- "~/Downloads/"
+ruta_zip <- "~/Downloads"
 
-# Listar todos los zip
-archivos_zip <- list.files(ruta_zip,
-                            pattern = "\\.zip$",
-                            full.names = TRUE)
+archivos_zip <- list.files(
+  ruta_zip,
+  pattern = "\\.zip$",
+  full.names = TRUE
+)
 
 leer_viirs_zip <- function(zip_path) {
   
-  # Obtener nombre del archivo
   nombre_zip <- basename(zip_path)
   
-  # Detectar si es Galapagos
-  es_galapagos <- ifelse(str_detect(nombre_zip, "Galapagos"),
-                         "Galapagos",
-                         "No_Galapagos")
+  anio <- stringr::str_extract(nombre_zip, "\\d{4}") |> as.numeric()
   
-  # Extraer año inicial (primer año que aparece en el nombre)
-  anio <- str_extract(nombre_zip, "\\d{4}") |> as.numeric()
-  
-  # Listar contenido interno del zip
   contenido <- unzip(zip_path, list = TRUE)
   
-  # Buscar el csv que te interesa
   archivo_objetivo <- contenido$Name[
-    str_detect(contenido$Name, "public-global-viirs-presence-v4\\.0\\.csv")
+    stringr::str_detect(
+      contenido$Name,
+      "public-global-viirs-presence.*\\.csv$"
+    )
   ]
   
-  # Leer directamente desde el zip sin extraer
-  datos <- read_csv(unz(zip_path, archivo_objetivo),
-                    show_col_types = FALSE)
+  if (length(archivo_objetivo) == 0) {
+    warning("No se encontró archivo VIIRS CSV en: ", nombre_zip)
+    return(NULL)
+  }
   
-  # Agregar columnas nuevas
+  if (length(archivo_objetivo) > 1) {
+    warning("Se encontró más de un CSV VIIRS en: ", nombre_zip, ". Usando el primero.")
+    archivo_objetivo <- archivo_objetivo[1]
+  }
+  
+  datos <- readr::read_csv(
+    unz(zip_path, archivo_objetivo),
+    show_col_types = FALSE
+  )
+  
   datos <- datos |> 
-    mutate(
-      zona = es_galapagos,
-      anio = anio
-    )
+    mutate(anio = anio)
   
   return(datos)
 }
+
 viirs_total <- purrr::map_dfr(archivos_zip, leer_viirs_zip)
-save(viirs_total, file="../data/viirs.rda")
+
+save(viirs_total, file = "../data/viirs.rda")
 ```
 
 
 
 ```{r}
 load(file="../data/viirs.rda")
+viirs <- viirs_total
 ```
-
-
-```{r eval=FALSE}
-# 1) Vector MMSI y WHEREs (ssvid)
-mmsi <- unique(viirs_total$mmsi)
-mmsi <- mmsi[!is.na(mmsi)]
-mmsi <- as.character(mmsi)
-
-mmsiSearch <- paste0("ssvid = '", mmsi, "'")
-# Si tuviste que sacar el primero por algún motivo antes, comenta la siguiente línea
-# mmsiSearch <- mmsiSearch[-1]
-
-# 2) Barra de progreso (se actualiza en la misma línea)
-pb <- txtProgressBar(min = 0, max = length(mmsiSearch), style = 3)
-
-# 3) Loop robusto (no imprime por iteración, no se cae si falta flag)
-res_list <- vector("list", length(mmsiSearch))
-
-for (k in seq_along(mmsiSearch)) {
-
-  i <- mmsiSearch[k]
-  setTxtProgressBar(pb, k)
-
-  res <- tryCatch(
-    suppressMessages(
-      suppressWarnings(
-        gfw_vessel_info(where = i, search_type = "search", quiet = TRUE)
-      )
-    ),
-    error = function(e) NULL
-  )
-
-  # Extraer flags de forma segura
-  flag_registry <- NA_character_
-  flag_ais      <- NA_character_
-
-  if (!is.null(res)) {
-
-    if (!is.null(res$registryInfo) &&
-        nrow(res$registryInfo) > 0 &&
-        "flag" %in% names(res$registryInfo)) {
-      flag_registry <- res$registryInfo$flag[1]
-    }
-
-    if (!is.null(res$selfReportedInfo) &&
-        nrow(res$selfReportedInfo) > 0 &&
-        "flag" %in% names(res$selfReportedInfo)) {
-      flag_ais <- res$selfReportedInfo$flag[1]
-    }
-  }
-
-  # Guardar resultado (1 fila siempre)
-  res_list[[k]] <- data.frame(
-    where         = i,
-    flag_registry = flag_registry,
-    flag_ais      = flag_ais,
-    stringsAsFactors = FALSE
-  )
-
-  # Evita rate limit (ajusta si quieres)
-  Sys.sleep(0.2)
-}
-
-close(pb)
-
-# 4) Unir todo en un data.frame final
-vesInfo <- bind_rows(res_list)
-
-# (Opcional) recuperar MMSI desde el where
-vesInfo <- vesInfo %>%
-  mutate(mmsi = sub("^ssvid = '([^']+)'.*$", "\\1", where))
-
-# Listo
-# View(vesInfo)
-# head(vesInfo)
-save(vesInfo, file="../data/vesInfo_viirs.rda")
-```
-
-```{r}
-load(file="../data/vesInfo_viirs.rda")
-
-vesInfo <- vesInfo %>% 
-  select(flag_ais, mmsi)
-
-viirs <- merge(viirs_total, vesInfo, by="mmsi", all.x=T) %>% 
-        rename(Flag = flag_ais,
-               year = anio)
-
-```
-
 
 
 ## Tabla resumen de detecciones
 ```{r}
 temp_year <- viirs %>% 
-  mutate(year = as.numeric(year)) %>%   # asegurar que sea numérico
-  group_by(Flag, year, zona) %>% 
+  mutate(year = as.numeric(anio)) %>%   # asegurar que sea numérico
+  group_by(Flag, year) %>% 
   summarise(n = sum(Detections, na.rm=T), .groups = "drop") %>% 
   arrange(year) %>% 
   pivot_wider(
-    names_from = c(year, zona),          # si quieres que las columnas sean los años
+    names_from = c(year),          # si quieres que las columnas sean los años
     values_from = n,
     values_fill = 0            # rellenar NA con vacío
   ) %>% 
   select(Flag, sort(names(.)[-1]))  # ordenar columnas numéricamente
 
 temp_total <- viirs %>% 
-  mutate(year = as.numeric(year)) %>%   # asegurar que sea numérico
-  group_by(zona, Flag) %>% 
-  summarise(total = sum(Detections, na.rm=T), .groups = "drop") %>% 
-  pivot_wider(
-    names_from = zona,          # si quieres que las columnas sean los años
-    values_from = total,
-    values_fill = 0            # rellenar NA con vacío
-  )
+  mutate(year = as.numeric(anio)) %>%   # asegurar que sea numérico
+  group_by(Flag) %>% 
+  summarise(total = sum(Detections, na.rm=T), .groups = "drop")
   
 temp <- temp_year %>% 
   left_join(temp_total, by = "Flag") %>% 
-  arrange(desc(No_Galapagos)) %>% 
+  arrange(desc(total)) %>% 
   mutate(
     Flag = countrycode::countrycode(
       Flag,
@@ -448,14 +375,18 @@ kableExtra::kable(
 ```{r}
 
 mapa_viirs <- viirs %>% 
-              mutate(conID = if_else(!is.na(`mmsi`), "yes", "no")) %>% 
+              mutate(conID = if_else(!is.na(`Flag`), "yes", "no")) %>% 
               group_by(Lat, Lon, conID) %>% 
               summarise(det = sum(Detections, na.rm=T))
 
 ```
+
+
 ```{r fig.width=7, fig.height=4.8}
 gfw_map(theme = 'dark', res = 10, eezs = TRUE) +
-    coord_sf(xlim = c(-95, -77), ylim = c(-5, 5), crs = 4326) +
+    geom_sf(data = amp_panama, col = "white", fill = gfw_palettes$primary[1], alpha = 0) +
+      geom_sf(data = eez_sf, col = "grey", fill = gfw_palettes$primary[1], alpha = 0) +
+    coord_sf(xlim = xlimites, ylim = ylimites, crs = 4326) +
     geom_tile(data = mapa_viirs,
               aes(x = Lon, y = Lat, fill = det), show.legend = TRUE) +
     viridis::scale_fill_viridis(limits = c(0.1, 1),
@@ -506,11 +437,6 @@ leer_opti_zip <- function(zip_path) {
   # Obtener nombre del archivo
   nombre_zip <- basename(zip_path)
   
-  # Detectar si es Galapagos
-  es_galapagos <- ifelse(str_detect(nombre_zip, "Galapagos"),
-                         "Galapagos",
-                         "Ecuador")
-  
   # Extraer año inicial (primer año que aparece en el nombre)
   anio <- str_extract(nombre_zip, "\\d{4}") |> as.numeric()
   
@@ -529,7 +455,6 @@ leer_opti_zip <- function(zip_path) {
   # Agregar columnas nuevas
   datos <- datos |> 
     mutate(
-      zona = es_galapagos,
       anio = anio
     )
   
@@ -546,123 +471,30 @@ load(file="../data/opti.rda")
 ```
 
 
-```{r eval=FALSE}
-# 1) Vector MMSI y WHEREs (ssvid)
-mmsi <- unique(opti_total$mmsi)
-mmsi <- mmsi[!is.na(mmsi)]
-mmsi <- as.character(mmsi)
-
-mmsiSearch <- paste0("ssvid = '", mmsi, "'")
-# Si tuviste que sacar el primero por algún motivo antes, comenta la siguiente línea
-# mmsiSearch <- mmsiSearch[-1]
-
-# 2) Barra de progreso (se actualiza en la misma línea)
-pb <- txtProgressBar(min = 0, max = length(mmsiSearch), style = 3)
-
-# 3) Loop robusto (no imprime por iteración, no se cae si falta flag)
-res_list <- vector("list", length(mmsiSearch))
-
-for (k in seq_along(mmsiSearch)) {
-
-  i <- mmsiSearch[k]
-  setTxtProgressBar(pb, k)
-
-  res <- tryCatch(
-    suppressMessages(
-      suppressWarnings(
-        gfw_vessel_info(where = i, search_type = "search", quiet = TRUE)
-      )
-    ),
-    error = function(e) NULL
-  )
-
-  # Extraer flags de forma segura
-  flag_registry <- NA_character_
-  flag_ais      <- NA_character_
-
-  if (!is.null(res)) {
-
-    if (!is.null(res$registryInfo) &&
-        nrow(res$registryInfo) > 0 &&
-        "flag" %in% names(res$registryInfo)) {
-      flag_registry <- res$registryInfo$flag[1]
-    }
-
-    if (!is.null(res$selfReportedInfo) &&
-        nrow(res$selfReportedInfo) > 0 &&
-        "flag" %in% names(res$selfReportedInfo)) {
-      flag_ais <- res$selfReportedInfo$flag[1]
-    }
-  }
-
-  # Guardar resultado (1 fila siempre)
-  res_list[[k]] <- data.frame(
-    where         = i,
-    flag_registry = flag_registry,
-    flag_ais      = flag_ais,
-    stringsAsFactors = FALSE
-  )
-
-  # Evita rate limit (ajusta si quieres)
-  Sys.sleep(0.2)
-}
-
-close(pb)
-
-# 4) Unir todo en un data.frame final
-vesInfo <- bind_rows(res_list)
-
-# (Opcional) recuperar MMSI desde el where
-vesInfo <- vesInfo %>%
-  mutate(mmsi = sub("^ssvid = '([^']+)'.*$", "\\1", where))
-
-# Listo
-# View(vesInfo)
-# head(vesInfo)
-save(vesInfo, file="../data/vesInfo_opti.rda")
-```
-
-```{r}
-load(file="../data/vesInfo_opti.rda")
-
-vesInfo <- vesInfo %>% 
-  select(flag_ais, mmsi)
-
-opti <- merge(opti_total, vesInfo, by="mmsi", all.x=T) %>% 
-        rename(Flag = flag_ais,
-               year = anio)
-
-```
-
-
-
 ## Tabla resumen de detecciones
 ```{r}
+opti <- opti_total
+
 temp_year <- opti %>% 
-  mutate(year = as.numeric(year)) %>%   # asegurar que sea numérico
-  group_by(Flag, year, zona) %>% 
+  mutate(year = as.numeric(anio)) %>%   # asegurar que sea numérico
+  group_by(Flag, year) %>% 
   summarise(n = sum(Detections, na.rm=T), .groups = "drop") %>% 
   arrange(year) %>% 
   pivot_wider(
-    names_from = c(year, zona),          # si quieres que las columnas sean los años
+    names_from = c(year),          # si quieres que las columnas sean los años
     values_from = n,
     values_fill = 0            # rellenar NA con vacío
   ) %>% 
   select(Flag, sort(names(.)[-1]))  # ordenar columnas numéricamente
 
 temp_total <- opti %>% 
-  mutate(year = as.numeric(year)) %>%   # asegurar que sea numérico
-  group_by(zona, Flag) %>% 
-  summarise(total = sum(Detections, na.rm=T), .groups = "drop") %>% 
-  pivot_wider(
-    names_from = zona,          # si quieres que las columnas sean los años
-    values_from = total,
-    values_fill = 0            # rellenar NA con vacío
-  )
+  mutate(year = as.numeric(anio)) %>%   # asegurar que sea numérico
+  group_by(Flag) %>% 
+  summarise(total = sum(Detections, na.rm=T), .groups = "drop") 
   
 temp <- temp_year %>% 
   left_join(temp_total, by = "Flag") %>% 
-  arrange(desc(Ecuador)) %>% 
+  arrange(desc(total)) %>% 
   mutate(
     Flag = countrycode::countrycode(
       Flag,
@@ -687,7 +519,7 @@ kableExtra::kable(
 ```{r}
 
 mapa_opti <- opti %>% 
-              mutate(conID = if_else(!is.na(`mmsi`), "yes", "no")) %>% 
+              mutate(conID = if_else(!is.na(Flag), "yes", "no")) %>% 
               group_by(Lat, Lon, conID) %>% 
               summarise(det = sum(Detections, na.rm=T))
 
@@ -695,7 +527,9 @@ mapa_opti <- opti %>%
 
 ```{r fig.width=7, fig.height=4.8}
 gfw_map(theme = 'dark', res = 10, eezs = TRUE) +
-    coord_sf(xlim = c(-95, -77), ylim = c(-5, 5), crs = 4326) +
+      geom_sf(data = amp_panama, col = "white", fill = gfw_palettes$primary[1], alpha = 0) +
+      geom_sf(data = eez_sf, col = "grey", fill = gfw_palettes$primary[1], alpha = 0) +
+    coord_sf(xlim = xlimites, ylim = ylimites, crs = 4326) +
     geom_tile(data = mapa_opti,
               aes(x = Lon, y = Lat, fill = det), show.legend = TRUE) +
     viridis::scale_fill_viridis(limits = c(0.1, 3),

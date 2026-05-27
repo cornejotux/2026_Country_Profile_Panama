@@ -132,7 +132,7 @@ amp_panama <- st_read(
 
 gfw_map(theme = "dark", res = 10, eezs = TRUE) +
   geom_sf(data = zee_sf, fill = gfw_palettes$primary[2], alpha = .3) +
-  geom_sf(data = amp_panama, col = gfw_palettes$primary[1], fill = gfw_palettes$primary[1], alpha = .3) +
+  geom_sf(data = amp_panama, col = "darkgrey", fill = "darkgrey", alpha = 0) +
   coord_sf(
     xlim = xlimites,
     ylim = ylimites,
@@ -1283,8 +1283,8 @@ gfw_map(theme = 'dark', res = 10, eezs = TRUE) +
     coord_sf(xlim = xlimites, ylim = ylimites, crs = 4326) +
     geom_tile(data = spaDinamics,
               aes(x = Lon, y = Lat, fill = fe, interpolate=TRUE), show.legend = TRUE) +
-    viridis::scale_fill_viridis(limits = c(0.1, 2),
-                     breaks=seq(0,2,by=.5),
+    viridis::scale_fill_viridis(limits = c(0.1, 1),
+                     breaks=seq(0,1,by=.25),
                      oob = scales::squish,
                      na.value = NA) +
     theme(
@@ -1306,7 +1306,7 @@ gfw_map(theme = 'dark', res = 10, eezs = TRUE) +
 
 ### Cerco de atun por año
 
-```{r}
+```{r cache = FALSE}
 spaDinamics <- dataAllEEZ_fh %>% 
                   mutate(arte = case_when(
                     `Gear Type` == "TUNA_PURSE_SEINES" ~ "Cerco de atún",
@@ -1316,10 +1316,10 @@ spaDinamics <- dataAllEEZ_fh %>%
                     `Gear Type` %in% c("OTHER_PURSE_SEINES", "PURSE_SEINES") ~ "Cerquero",
                     `Gear Type` == "POTS_AND_TRAPS" ~ "Trampas",
                     `Gear Type` %in% c("SET_LONGLINES", "DRIFTING_LONGLINES") ~ "Palangre",
-                    `Gear Type` == "FISHING" ~ "Otros pesqueros",
-                    TRUE ~ "Otros pesqueros"
+                    `Gear Type` == "FISHING" ~ "Otr. pesqueros",
+                    TRUE ~ "Otr. pesqueros"
                   )) %>% 
-                  filter(arte %in% c("Cerco de atún", "Cerquero", "Palangre")) %>% 
+                  filter(arte %in% c("Arrastre", "Palangre", "Otr. pesqueros")) %>% 
                   mutate(arte = factor(arte, levels = sort(unique(arte)))) %>% 
                   group_by(year, Lat, Lon, arte) %>% 
                   summarise(fe = sum(`Apparent Fishing Hours`, na.rm=T))
@@ -1327,7 +1327,7 @@ spaDinamics <- dataAllEEZ_fh %>%
 ```
 
 
-```{r fig.width=7, fig.height=7}
+```{r fig.width=7, fig.height=7, cache=FALSE}
 gfw_map(theme = 'dark', res = 10, eezs = TRUE) +
       geom_sf(data = amp_panama, col = "white",   linewidth = 0.05, #gfw_palettes$primary[1], 
             fill = gfw_palettes$primary[1], alpha = 0) +

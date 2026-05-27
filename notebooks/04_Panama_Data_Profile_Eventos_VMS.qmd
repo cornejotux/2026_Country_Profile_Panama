@@ -791,8 +791,8 @@ vmsPort <- gfw_map(theme = 'dark', res = 10, eezs = TRUE) +
   geom_point(data = mapPortVisits,
              aes(x = meanLon, 
                  y = meanLat, 
-                 col = area_nombre,
                  size = n),      # <-- mapear dentro de aes()
+              col =  gfw_palettes$map_presence_dark[3],
              alpha = .4,
              show.legend = TRUE) +
 
@@ -835,13 +835,28 @@ Agregamos los puertos en AIS y hacemos un mapa unico
 
 
 ```{r}
+
+eventosMap <- eventos %>% 
+              filter(eventType == "port_visit") %>% 
+  mutate(topDestination = map_chr(
+                                  event_info,
+                                  ~ .x$startAnchorage$topDestination %||% NA_character_)) %>% 
+  group_by(year, eventId, lat, lon, topDestination) %>% 
+  summarise(n = n()) %>% 
+  group_by(lat, lon, topDestination) %>% 
+  summarise(n = n())
+  
+  
+
+
 aisPort <- gfw_map(theme = 'dark', res = 10, eezs = TRUE) +
   coord_sf(xlim = xlimites, ylim = ylimites, crs = 4326) +
-  geom_point(data = eventos %>% filter(eventType == "port_visit"),
+  geom_point(data = eventosMap,
              aes(x = lon, 
                  y = lat, 
-                 col = eez_label),
-             size = 0.001,
+                 size = n),
+             col =  gfw_palettes$map_presence_dark[3],
+             alpha=0.4,
              show.legend = TRUE) +
   scale_color_manual(
     name = "Zona EEZ",
@@ -876,7 +891,7 @@ aisPort <- gfw_map(theme = 'dark', res = 10, eezs = TRUE) +
 mapa1 <- vmsPort +
   escala_zona +
   #guia_zona +
-  labs(title = "Visitar a puerto en VMS") +
+  labs(title = "Visitas a puerto en VMS") +
   theme(
     legend.position = "bottom",
     plot.title = element_text(size = 11, face = "bold", hjust = 0.5),

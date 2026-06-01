@@ -178,12 +178,12 @@ write_csv(posiciones_por_fecha, "../data/panama_vms_posiciones_por_fecha.csv")
 query <- "
 SELECT
   EXTRACT(YEAR FROM timestamp) AS anio,
-  core_geartype,
+  core_geartype, source_fleet,
   COUNT(DISTINCT ssvid) AS numero_barcos
 FROM `world-fishing-827.scratch_JorgeCornejo.202605_Panama_vmsPositions`
 WHERE ssvid IS NOT NULL
-GROUP BY anio, core_geartype
-ORDER BY anio, core_geartype"
+GROUP BY anio, core_geartype, source_fleet
+ORDER BY anio, core_geartype, source_fleet"
 
 barcos_por_anio_arte <- bq_project_query(
   project_id,
@@ -197,18 +197,18 @@ query <- "
 WITH minutos_por_celda AS (
   SELECT
     EXTRACT(YEAR FROM timestamp) AS anio,
-    core_geartype,
+    core_geartype, source_fleet,
     FLOOR(lat * 100) / 100 AS lat_0_01,
     FLOOR(lon * 100) / 100 AS lon_0_01,
     COUNT(DISTINCT TIMESTAMP_TRUNC(timestamp, MINUTE)) AS minutos
   FROM `world-fishing-827.scratch_JorgeCornejo.202605_Panama_vmsPositions`
   WHERE nnet_score > 0.5
-  GROUP BY anio, core_geartype, lat_0_01, lon_0_01
+  GROUP BY anio, core_geartype, source_fleet, lat_0_01, lon_0_01
 )
 
-SELECT anio, core_geartype, lat_0_01, lon_0_01, minutos / 60.0 AS horas
+SELECT anio, core_geartype, source_fleet, lat_0_01, lon_0_01, minutos / 60.0 AS horas
 FROM minutos_por_celda
-ORDER BY anio, core_geartype, lat_0_01, lon_0_01"
+ORDER BY anio, core_geartype, source_fleet, lat_0_01, lon_0_01"
 
 horas_por_pixel_espacial <- bq_project_query(
   project_id,
@@ -224,20 +224,20 @@ query <- "
 WITH minutos_por_celda AS (
   SELECT
     EXTRACT(YEAR FROM timestamp) AS anio,
-    core_geartype,
+    core_geartype, source_fleet,
     FLOOR(lat * 100) / 100 AS lat_0_01,
     FLOOR(lon * 100) / 100 AS lon_0_01,
     COUNT(DISTINCT TIMESTAMP_TRUNC(timestamp, MINUTE)) AS minutos
   FROM `world-fishing-827.scratch_JorgeCornejo.202605_Panama_vmsPositions`
   WHERE speed_knots >= 0.1
     AND speed_knots <= 5
-  GROUP BY anio, core_geartype, lat_0_01, lon_0_01
+  GROUP BY anio, core_geartype, source_fleet, lat_0_01, lon_0_01
 )
 
 SELECT
-  anio, core_geartype, lat_0_01, lon_0_01, minutos / 60.0 AS horas
+  anio, core_geartype, source_fleet, lat_0_01, lon_0_01, minutos / 60.0 AS horas
 FROM minutos_por_celda
-ORDER BY anio, core_geartype, lat_0_01, lon_0_01"
+ORDER BY anio, core_geartype, source_fleet, lat_0_01, lon_0_01"
 
 horas_por_pixel_velocidad <- bq_project_query(
   project_id,
@@ -331,7 +331,7 @@ ggplot(vel, aes(x = vel, y = numeroPos)) +
   ) 
 ```
 
-Claramente hay mucahs posiciones con velocidad 0, por lo que las vamos a remover
+Claramente hay muchas posiciones con velocidad 0, por lo que las vamos a remover
 ya que estas representan posiciones en puerto o bien fondeos y velocidades 
 mayores a 20 nudos no tienen mucha validez.
 
@@ -352,8 +352,6 @@ ggplot(vel %>%filter(vel >= .5, vel <= 20), aes(x = vel, y = numeroPos)) +
  representacion para el esfuerzo de pesca aparente. Poer esta razón, solo
  trabajaremos con el raster de datos nnet_score > a 0.5.
  
-
- 
  
 # Número de barcos por clase
 
@@ -361,36 +359,28 @@ ggplot(vel %>%filter(vel >= .5, vel <= 20), aes(x = vel, y = numeroPos)) +
 
 # 2) Diccionario de traducción (puedes agregar más pares aquí)
 gear_dict <- c(
-  `No reportado`     = "No reportado",
-  cargo_reefer       = "Car. refrigerado",
-  longline           = "Palangre",
-  longline_gigging   = "Palangre/fisga",
-  oil_tanker         = "B. petrolero",
-  purse_seine        = "Cerquero",
-  supply             = "B. de suministro",
-  torchlight_net     = "Red con luces"
+  INTERNATIONAL  = "Internacional",
+  LONGLINE       = "Palangre",
+  TRAWLER        = "Arrastre"
 )
 
 # 3) Limpieza + traducción
 df_es <- nYearGeartype %>%
   mutate(
-    core_geartype = if_else(is.na(core_geartype) | core_geartype == "NULL",
+    core_geartype = if_else(is.na(source_fleet) | source_fleet == "NULL",
                             "No reportado",
-                            core_geartype),
+                            source_fleet),
 
     arte_pesca_es = map_chr(str_split(core_geartype, "\\|"), \(v) {
       if (length(v) == 1 && v[1] == "No reportado") return("No reportado")
       paste(dplyr::recode(v, !!!gear_dict, .default = v), collapse = " y ")
     })
-  ) %>% 
-  mutate(arte_pesca_es = if_else(arte_pesca_es == "Palangre de deriva y Palangre de fondo",
-                                 "Palangre de deriva y fondo", arte_pesca_es)) 
+  )
 
 ```
 
 ```{r fig.width=7, fig.height=7}
 df_es %>% 
-  mutate(arte_pesca_es = if_else(arte_pesca_es == "", "No reportado", arte_pesca_es)) %>% 
   filter(anio < 2026) %>% 
   ggplot(aes(x = arte_pesca_es, y = numero_barcos)) +
   geom_col(width = .8, 
@@ -399,24 +389,9 @@ df_es %>%
   facet_wrap(~ anio, ncol = 2) +
   #scale_x_continuous(breaks = seq(0, 23, 3)) +
   labs(
-    x = "Arte de pesca",
+    x = "Flota",
     y = "Número de embarcaciones"
   ) 
-
-df_es %>% 
-#  mutate(arte_pesca_es = if_else(arte_pesca_es == "", "No reportado", arte_pesca_es)) %>% 
-  filter(anio < 2026, arte_pesca_es != "") %>% 
-  ggplot(aes(x = arte_pesca_es, y = numero_barcos)) +
-  geom_col(width = .8, 
-           #col=gfw_palettes$primary[1],
-           fill=gfw_palettes$primary[1], alpha=.6) +
-  facet_wrap(~ anio, ncol = 2) +
-  #scale_x_continuous(breaks = seq(0, 23, 3)) +
-  labs(
-    x = "Arte de pesca",
-    y = "Número de embarcaciones"
-  ) 
-
 ```
 Numero de barco en VMS por año
 
@@ -427,8 +402,6 @@ df_es %>%
   summarise(nBarcos = sum(numero_barcos, na.rm=T)) %>% 
   kableExtra::kable()
   
-
-
 ```
 
 
@@ -450,7 +423,7 @@ mapaAcumulado <- raster_nnet %>%
 gfw_map(theme = 'dark', res = 10, eezs = TRUE) +
     #coord_sf(xlim = c(-95, -77), ylim = c(-5, 5), crs = 4326) +
     geom_tile(data = mapaAcumulado,
-              aes(x = lon_0_01, y = lat_0_01, fill = fe), col="red", size=.2, show.legend = FALSE) +
+              aes(x = lon_0_01, y = lat_0_01, fill = fe, col="arte_"), size=.2, show.legend = FALSE) +
     theme(
       axis.title = element_text(size = 9),
       axis.title.x = element_text(margin = margin(t = 4, unit = "pt")), 
@@ -465,45 +438,12 @@ gfw_map(theme = 'dark', res = 10, eezs = TRUE) +
     labs( x = "Longitud", y = "Latitud", fill = "Presencia VMS" ) 
 
 ```
- Los datos VMS muestran actividad en casi todos los oceanos, pero se concentra 
- en el pacifico central, que es donde nos concentraremos.
- 
- 
-```{r fig.width=7, fig.height=4.8, eval=F}
- 
-gfw_map(theme = 'dark', res = 10, eezs = TRUE) +
-    coord_sf(xlim = c(-180, -70), ylim = c(-50, 20), crs = 4326) +
-    geom_tile(data = mapaAcumulado,
-              aes(x = lon_0_01, y = lat_0_01, fill = fe, col="red"), size=.05, show.legend = FALSE) +
-    # viridis::scale_fill_viridis(limits = c(0.1, 1),
-    #                  breaks=seq(0,1,by=.2),
-    #                  oob = scales::squish,
-    #                  na.value = NA) +
-    theme(
-      axis.title = element_text(size = 9),
-      axis.title.x = element_text(margin = margin(t = 4, unit = "pt")), 
-      axis.text = element_text(size = 9),
-      axis.text.x = element_text(size = 9, angle = 45, hjust = 1),
-      axis.text.y = element_text(size = 9),
-      axis.ticks.y = element_line(color = "white"),
-      strip.text = element_text(size = 9, face = "bold"),
-      legend.position = "right",  # Mostrar leyenda
-      legend.key.width = unit(0.3, "cm")
-      ) +
-    labs( x = "Longitud", y = "Latitud", fill = "Presencia VMS" ) 
-
-```
-Entonces ahora vamos a hacer una tabla donde se resuma la presencia dentro de 
-las 2 ZEE de Ecaudor y de la actividad fuera de la ZEE de ecuador
- 
  
 ## Horas por año, arte y zona
 
 ```{r}
 pos <- raster_nnet
-
 eezs <- zee_sf
-
 eez_sel <- eezs %>% filter(MRGID %in% c(8423))
 
 cells <- pos %>%
@@ -535,7 +475,7 @@ pos2 <- pos %>%
 ```{r}
 
 tabla_zona <- pos2 %>%
-  group_by(anio, core_geartype, eez_tag) %>%
+  group_by(anio, source_fleet, core_geartype, eez_tag) %>%
   summarise(
     horas_totales = round(sum(horas, na.rm = TRUE), 0),
     .groups = "drop"
@@ -545,15 +485,16 @@ tabla_base <- tabla_zona %>%
   mutate(anio_zona = paste(anio, eez_tag, sep = "_"))
 
 tabla_final <- tabla_base %>%
-  select(core_geartype, anio_zona, horas_totales) %>%
+  select(source_fleet, core_geartype, anio_zona, horas_totales) %>%
   pivot_wider(
     names_from = anio_zona,
     values_from = horas_totales,
     values_fill = 0
-  )
+  ) %>% 
+  arrange(source_fleet, core_geartype)
 
 tabla_wide <- tabla_final %>%
-  relocate(core_geartype)
+  relocate(c(source_fleet, core_geartype))
 
 # obtener años únicos
 anios <- sort(unique(pos2$anio))
@@ -562,7 +503,7 @@ anios <- sort(unique(pos2$anio))
 n_zonas <- length(unique(pos2$eez_tag))
 
 # crear vector para encabezado
-header_vector <- c(" " = 1)
+header_vector <- c(" " = 2)
 
 for (a in anios) {
   header_vector[as.character(a)] <- n_zonas
@@ -586,32 +527,20 @@ dentroEEZ <- pos2 %>%
 
 
 ```{r}
+gear_dict
+
 mapa_arte <- dentroEEZ %>% 
-  group_by(lat_0_01, lon_0_01, core_geartype) %>% 
+  group_by(lat_0_01, lon_0_01, source_fleet, core_geartype) %>% 
   summarise(fe = sum(horas, na.rm = TRUE), .groups = "drop") %>% 
   mutate(
-    core_geartype = if_else(core_geartype == "" | is.na(core_geartype),
-                            "No reportado",
-                            core_geartype)
-  ) %>% 
-  mutate(
-    arte = recode(core_geartype,
-      `No reportado`     = "No reportado",
-      cargo_reefer       = "Car. refrigerado",
-      longline           = "Palangre",
-      longline_gigging   = "Palangre/fisga",
-      oil_tanker         = "B. petrolero",
-      purse_seine        = "Cerquero",
-      supply             = "B. de suministro",
-      torchlight_net     = "Red con luces"
-    )
+    arte = recode(source_fleet, !!!gear_dict, .default = source_fleet)
   )
 
 gfw_map(theme = "dark", res = 10, eezs = TRUE) +
   coord_sf(xlim = xlimites, ylim = ylimites, crs = 4326, expand = FALSE) +
   geom_tile(data = mapa_arte, aes(lon_0_01, lat_0_01, fill = fe)) +
   viridis::scale_fill_viridis(
-    limits = c(0.1, .6), breaks = seq(0, .6, 0.2),
+    limits = c(0.1, 2), breaks = seq(0, 2, 0.5),
     oob = scales::squish, na.value = NA
   ) +
   labs(x = "Longitud", y = "Latitud", fill = "Esfuerzo de pesca \n aparente (hr)") +

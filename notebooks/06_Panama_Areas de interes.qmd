@@ -111,118 +111,102 @@ ylimites = c(4, 13)
 
 # Áreas de interes
 
-## 8 mn
+## Cordillera de Coiba
 
-Leemos todos los datos
+### Presencia Nacional
+
+Leemos todos los datos VMS. Estos datos los sacamos desde la pagina web.
 
 ```{r}
-ruta_base <- "../data/AOI/8mn"
-
-carpetas_base <- list.dirs(
+ruta_base <- "../data/AOI/C_de_coiba/Pres_Nacional/"
+archivos_zip <- list.files(
   path = ruta_base,
-  full.names = TRUE,
-  recursive = FALSE
+  pattern = "\\.zip$",
+  full.names = TRUE
 )
 
-extraer_anio <- function(nombre_carpeta) {
-  stringr::str_extract(
-    string = basename(nombre_carpeta),
-    pattern = "\\d{4}(?=-01-01T)"
+extraer_anio <- function(nombre_archivo) {
+  str_extract(
+    basename(nombre_archivo),
+    "\\d{4}(?=-01-01T)"
   )
 }
 
 extraer_pais_archivo <- function(nombre_archivo) {
   nombre <- tools::file_path_sans_ext(basename(nombre_archivo)) |> 
     tolower()
-
-if (stringr::str_detect(nombre, "^public-vms-")) {
-    pais <- stringr::str_extract(nombre, "(?<=^public-vms-)[^-]+")
-  } else if (stringr::str_detect(nombre, "^public-")) {
-    pais <- stringr::str_extract(nombre, "(?<=^public-)[^-]+")
+  if (str_detect(nombre, "^public-vms-")) {
+    str_extract(nombre, "(?<=^public-vms-)[^-]+")
+  } else if (str_detect(nombre, "^public-")) {
+    str_extract(nombre, "(?<=^public-)[^-]+")
   } else {
-    pais <- NA_character_
+    NA_character_
   }
-  
-  pais
 }
 
-leer_csv_seguro <- function(archivo, anio_carpeta, carpeta_base) {
+leer_csv_seguro <- function(archivo, anio_zip, zip_origen) {
   datos <- tryCatch(
-    {
-      readr::read_csv(
-        archivo,
-        col_types = readr::cols(.default = readr::col_character()),
-        show_col_types = FALSE,
-        progress = FALSE
-      )
-    },
+    read_csv(
+      archivo,
+      col_types = cols(.default = col_character()),
+      show_col_types = FALSE,
+      progress = FALSE
+    ),
     error = function(e) {
       message("Error leyendo: ", basename(archivo), " -> ", e$message)
       return(NULL)
     }
   )
-  
-  if (is.null(datos)) {
+
+  if (is.null(datos) || nrow(datos) == 0) {
     return(NULL)
   }
-  
-  # Saltar archivos sin filas
-  if (nrow(datos) == 0) {
-    message("Archivo sin datos: ", basename(archivo))
-    return(NULL)
-  }
-  
+
   datos %>%
     mutate(
-      anio_carpeta = anio_carpeta,
+      anio_carpeta = anio_zip,
       pais_archivo = extraer_pais_archivo(archivo),
-      carpeta_base = basename(carpeta_base),
-      archivo_origen = basename(archivo)
+      archivo_origen = basename(archivo),
+      zip_origen = basename(zip_origen)
     )
 }
 
-datos_finales <- purrr::map_dfr(carpetas_base, function(carpeta) {
-  
-  anio_carpeta <- extraer_anio(carpeta)
-  subcarpeta <- file.path(carpeta, "layer-activity-data-1")
-  
-  if (!dir.exists(subcarpeta)) {
-    message("No existe subcarpeta: ", subcarpeta)
-    return(NULL)
-  }
-  
+datos_finales <- map_dfr(archivos_zip, function(zip_file) {
+  anio_zip <- extraer_anio(zip_file)
+  temp_dir <- tempfile()
+  dir.create(temp_dir)
+  unzip(zip_file, exdir = temp_dir)
   archivos_csv <- list.files(
-    path = subcarpeta,
+    path = temp_dir,
     pattern = "\\.csv$",
-    full.names = TRUE
+    full.names = TRUE,
+    recursive = TRUE
   )
-  
+
   if (length(archivos_csv) == 0) {
-    message("No hay CSV en: ", subcarpeta)
+    message("No hay CSV en: ", basename(zip_file))
     return(NULL)
   }
-  
-  purrr::map_dfr(
+
+  map_dfr(
     archivos_csv,
     ~ leer_csv_seguro(
       archivo = .x,
-      anio_carpeta = anio_carpeta,
-      carpeta_base = carpeta
+      anio_zip = anio_zip,
+      zip_origen = zip_file
     )
   )
 })
 
 datos_finales <- datos_finales %>%
   mutate(
-    Lat = readr::parse_number(Lat),
-    Lon = readr::parse_number(Lon),
-    `Apparent Fishing Hours` = readr::parse_number(`Apparent Fishing Hours`)
+    Lat = parse_number(Lat),
+    Lon = parse_number(Lon),
+    `hp` = parse_number(`Vessel Presence Hours`)
   )
-
-#glimpse(datos_finales)
 ```
 
-## Mapa de pesca aparente VMS
+#### Mapa de prescencia flota nacional VMS
 
 ```{r}
 
@@ -230,20 +214,26 @@ mapa <- datos_finales %>%
           mutate(lat_bin = round(Lat, 2),
                  lon_bin = round(Lon, 2)) %>% 
   group_by(lat_bin, lon_bin, Flag, anio_carpeta) %>% 
-  summarise(hp = sum(`Apparent Fishing Hours`, na.rm=T))
+  summarise(hp = sum(hp, na.rm=T))
 
 ```
 
 ```{r fig.width=8.5, fig.height=6.8}
 gfw_map(theme = 'dark', res = 10, eezs = TRUE) +
-    coord_sf(xlim = c(-82, -78), ylim = c(-4, 2), crs = 4326) +
-    geom_tile(data = mapa %>% filter(!is.na(Flag), anio_carpeta < 2026),
-              aes(x = lon_bin, y = lat_bin, fill = hp, interpolate=TRUE), show.legend = TRUE) +
-    viridis::scale_fill_viridis(limits = c(0.1, 2),
-                     breaks=seq(0,2,by=.5),
-                     oob = scales::squish,
-                     na.value = NA) +
-    theme(
+  coord_sf(xlim = c(-85, -80), ylim = c(4, 8), crs = 4326) +
+  geom_tile(data = mapa %>% filter(!is.na(Flag), anio_carpeta < 2026),
+    aes(x = lon_bin, y = lat_bin, fill = hp),
+    width = 0.02,
+    height = 0.02,
+    show.legend = TRUE
+  ) +
+  viridis::scale_fill_viridis(
+    limits = c(0.1, 2),
+    breaks = seq(0, .5, by = .25),
+    oob = scales::squish,
+    na.value = NA
+  ) +
+  theme(
       axis.title = element_text(size = 9),
       axis.title.x = element_text(margin = margin(t = 4, unit = "pt")), 
       axis.text = element_text(size = 9),
@@ -257,18 +247,20 @@ gfw_map(theme = 'dark', res = 10, eezs = TRUE) +
       legend.key.width = unit(0.6, "cm"),
       plot.margin = margin(4, 4, 4, 12, unit = "pt")
       ) +
-  scale_x_continuous(breaks = seq(-82, -78, by = 2)) +
+  scale_x_continuous(breaks = seq(-85, -80, by = 2)) +
   scale_y_continuous(breaks = seq(-4, 2, by = 2)) +
-    labs( x = "Longitud", y = "Latitud", fill = "Esfuerzo de pesca \n aparente (hr)" ) +
-    facet_grid(Flag ~ anio_carpeta, switch = "y")
-```
+  labs( x = "Longitud", y = "Latitud", fill = "Esfuerzo de pesca \n aparente (hr)" ) +
+    facet_wrap( ~ anio_carpeta)
 
+#write.csv(mapa, file="~/Downloads/temp.csv")
+```
+#### Horas y numero de barcos
 
 ```{r}
 
 datos_finales %>% 
           group_by(`Vessel ID`, Flag, anio_carpeta) %>% 
-          summarise(hp = sum(`Apparent Fishing Hours`, na.rm=T)) %>% 
+          summarise(hp = sum(hp, na.rm=T)) %>% 
           group_by(anio_carpeta, Flag) %>% 
           summarise(hp = sum(hp, na.rm=T), n = n()) %>% 
   pivot_wider(
@@ -282,269 +274,128 @@ datos_finales %>%
 
 
 
-## Hermandad
 
-Leemos todos los datos.
+### Presencia Nacional < 6mn
 
-Los datos son presencia de embarcaciones pesqueras navegando hasta a 4 nudos.
+Leemos todos los datos VMS. Estos datos los sacamos desde la pagina web.
 
 ```{r}
-poligono1 <- st_read("../data/AOI/Hermandad/Zonacion/Poligono1.geojson")
-poligono2 <- st_read("../data/AOI/Hermandad/Zonacion/Poligono2.geojson")
-centro <- st_read("../data/AOI/Hermandad/Zonacion/hermandad.geojson")
-
-ruta_base <- "../data/AOI/Hermandad/presencia/"
-
-carpetas_base <- list.dirs(
+ruta_base <- "../data/AOI/C_de_coiba/Pres_menos6kn/"
+archivos_zip <- list.files(
   path = ruta_base,
-  full.names = TRUE,
-  recursive = FALSE
+  pattern = "\\.zip$",
+  full.names = TRUE
 )
 
-extraer_anio <- function(nombre_carpeta) {
-  stringr::str_extract(
-    string = basename(nombre_carpeta),
-    pattern = "\\d{4}(?=-01-01T)"
+extraer_anio <- function(nombre_archivo) {
+  str_extract(
+    basename(nombre_archivo),
+    "\\d{4}(?=-01-01T)"
   )
 }
 
 extraer_pais_archivo <- function(nombre_archivo) {
   nombre <- tools::file_path_sans_ext(basename(nombre_archivo)) |> 
     tolower()
-  
-if (stringr::str_detect(nombre, "^public-vms-")) {
-    pais <- stringr::str_extract(nombre, "(?<=^public-vms-)[^-]+")
-  } else if (stringr::str_detect(nombre, "^public-")) {
-    pais <- stringr::str_extract(nombre, "(?<=^public-)[^-]+")
+  if (str_detect(nombre, "^public-vms-")) {
+    str_extract(nombre, "(?<=^public-vms-)[^-]+")
+  } else if (str_detect(nombre, "^public-")) {
+    str_extract(nombre, "(?<=^public-)[^-]+")
   } else {
-    pais <- NA_character_
+    NA_character_
   }
-  
-  pais
 }
 
-leer_csv_seguro <- function(archivo, anio_carpeta, carpeta_base) {
-  
+leer_csv_seguro <- function(archivo, anio_zip, zip_origen) {
   datos <- tryCatch(
-    {
-      readr::read_csv(
-        archivo,
-        col_types = readr::cols(.default = readr::col_character()),
-        show_col_types = FALSE,
-        progress = FALSE
-      )
-    },
+    read_csv(
+      archivo,
+      col_types = cols(.default = col_character()),
+      show_col_types = FALSE,
+      progress = FALSE
+    ),
     error = function(e) {
       message("Error leyendo: ", basename(archivo), " -> ", e$message)
       return(NULL)
     }
   )
-  
-  if (is.null(datos)) {
+
+  if (is.null(datos) || nrow(datos) == 0) {
     return(NULL)
   }
-  
-  # Saltar archivos sin filas
-  if (nrow(datos) == 0) {
-    message("Archivo sin datos: ", basename(archivo))
-    return(NULL)
-  }
-  
+
   datos %>%
     mutate(
-      anio_carpeta = anio_carpeta,
+      anio_carpeta = anio_zip,
       pais_archivo = extraer_pais_archivo(archivo),
-      carpeta_base = basename(carpeta_base),
-      archivo_origen = basename(archivo)
+      archivo_origen = basename(archivo),
+      zip_origen = basename(zip_origen)
     )
 }
 
-cargar_datos <- function(carpetas_base, dataType) {
-  
-  purrr::map_dfr(carpetas_base, function(carpeta) {
-    
-    anio_carpeta <- extraer_anio(carpeta)
-    
-    subcarpeta <- file.path(carpeta, dataType)
-    
-    if (!dir.exists(subcarpeta)) {
-      message("No existe subcarpeta: ", subcarpeta)
-      return(NULL)
-    }
-    
-    archivos_csv <- list.files(
-      path = subcarpeta,
-      pattern = "\\.csv$",
-      full.names = TRUE
+datos_finales <- map_dfr(archivos_zip, function(zip_file) {
+  anio_zip <- extraer_anio(zip_file)
+  temp_dir <- tempfile()
+  dir.create(temp_dir)
+  unzip(zip_file, exdir = temp_dir)
+  archivos_csv <- list.files(
+    path = temp_dir,
+    pattern = "\\.csv$",
+    full.names = TRUE,
+    recursive = TRUE
+  )
+
+  if (length(archivos_csv) == 0) {
+    message("No hay CSV en: ", basename(zip_file))
+    return(NULL)
+  }
+
+  map_dfr(
+    archivos_csv,
+    ~ leer_csv_seguro(
+      archivo = .x,
+      anio_zip = anio_zip,
+      zip_origen = zip_file
     )
-    
-    if (length(archivos_csv) == 0) {
-      message("No hay CSV en: ", subcarpeta)
-      return(NULL)
-    }
-    
-    purrr::map_dfr(
-      archivos_csv,
-      ~ leer_csv_seguro(
-        archivo = .x,
-        anio_carpeta = anio_carpeta,
-        carpeta_base = carpeta
-      )
-    )
-  })
-}
+  )
+})
 
-```
-### VMS
-
-```{r}
-datos_finales <- cargar_datos(
-  carpetas_base = carpetas_base,
-  dataType = "layer-activity-data-1"
-)
-
-# Convertir tipos después de unir
 datos_finales <- datos_finales %>%
   mutate(
-    Lat = readr::parse_number(Lat),
-    Lon = readr::parse_number(Lon),
-    `Vessel Presence Hours` = readr::parse_number(`Vessel Presence Hours`)
+    Lat = parse_number(Lat),
+    Lon = parse_number(Lon),
+    `hp` = parse_number(`Vessel Presence Hours`)
   )
-
 ```
 
-#### Listado de Barcos
-
-```{r}
-ruta <- "../data/AOI/Hermandad/BarcosConArte/"
-
-# Listar archivos CSV
-archivos <- list.files(path = ruta, pattern = "\\.csv$", full.names = TRUE)
-
-# Leer y combinar
-barcos <- archivos %>%
-  map_dfr(read_csv) %>% 
-  group_by(name, MMSI, flag, `GFW vessel type`, `GFW gear type`, vesselId) %>% 
-  summarise(n = n()) %>% 
-  rename(`Vessel ID`  = vesselId,
-         gear = `GFW gear type`)
-
-datos_finalesConArte <- merge(datos_finales, barcos, by="Vessel ID") %>% 
-                        mutate(gear_es = case_when(
-                          gear == "Drifting_longlines|set_longlines" ~ "Palangre",
-                          gear == "Drifting_longlines|squid_jiggers" ~ "Palangre / Poteras",
-                          gear == "Driftnets|set_gillnets" ~ "Redes de enmalle",
-                          gear == "Set_longlines|driftnets|set_gillnets" ~ "Artes mixtas",
-                          gear == "Red de cerco atunera" ~ "Cerco atunero",
-                          gear == "Red de cerco" ~ "Cerco",
-                          gear == "Pesca" ~ "Pesca general",
-                          gear == "---" ~ NA_character_,
-                          TRUE ~ "Otro"
-                        ))
-
-unique(datos_finalesConArte$`GFW gear type`)
-
-```
-
-#### Ahora les agregarmos el poligono!
-
-```{r}
-pts <- st_as_sf(
-  datos_finalesConArte,
-  coords = c("Lon", "Lat"),
-  crs = 4326   # cambia esto si tus coordenadas no están en WGS84
-)
-
-# 2) Unir ambos polígonos en un solo sf con una etiqueta
-polys <- bind_rows(
-  poligono1 %>% mutate(poligono = "geometry"),
-  poligono2 %>% mutate(poligono = "geometry")
-)
-
-# 3) Asegurar mismo CRS
-polys <- st_transform(polys, st_crs(pts))
-
-# 4) Evaluar pertenencia
-mat <- st_within(pts, polys, sparse = FALSE)
-
-# 5) Crear clasificación final
-pts$ubicacion <- case_when(
-  mat[, 1] ~ "dentro_poligono_1",
-  mat[, 2] ~ "dentro_poligono_2",
-  TRUE     ~ "fuera"
-)
-
-pts$ubicacion <- case_when(
-  mat[, 1] & !mat[, 2] ~ "poligono_1",
-  !mat[, 1] & mat[, 2] ~ "poligono_2",
-  mat[, 1] & mat[, 2]  ~ "ambos",
-  TRUE                 ~ "centro"
-)
-
-coords <- st_coordinates(pts)
-
-pts$Lon <- coords[, "X"]
-pts$Lat <- coords[, "Y"]
-
-#write.csv(pts, file="~/Downloads/temp.csv")
-
-```
-
-#### Tabla resumen de la actividad
+#### Mapa de prescencia flota nacional VMS
 
 ```{r}
 
-# Tabla resumen
-tabla_resumen <- pts %>%
-  st_drop_geometry() %>% 
-  mutate(
-    anio = as.integer(anio_carpeta),
-    poligono = ubicacion,
-    arte_pesca = gear_es,
-    barco = `Vessel ID`
-  ) %>%
-  group_by(anio, poligono, arte_pesca) %>%
-  summarise(
-    n_barcos = n_distinct(barco),
-    horas_presencia = sum(`Vessel Presence Hours`, na.rm = TRUE),
-    .groups = "drop"
-  ) %>%
-  pivot_wider(
-    names_from = poligono,
-    values_from = c(n_barcos, horas_presencia),
-    values_fill = 0
-  )
-
-kable(tabla_resumen)
-
-```
-
-#### Mapa VMS
-
-```{r}
-
-mapa <- datos_finalesConArte %>% 
+mapa <- datos_finales %>% 
           mutate(lat_bin = round(Lat, 2),
                  lon_bin = round(Lon, 2)) %>% 
-  group_by(lat_bin, lon_bin, gear_es) %>% 
-  summarise(hp = sum(`Vessel Presence Hours`, na.rm=T)) 
+  group_by(lat_bin, lon_bin, Flag, anio_carpeta) %>% 
+  summarise(hp = sum(hp, na.rm=T))
 
 ```
 
-
-```{r}
+```{r fig.width=8.5, fig.height=6.8}
 gfw_map(theme = 'dark', res = 10, eezs = TRUE) +
-    geom_sf(data = centro, fill = NA, color = "white", size = .1) +
-    geom_sf(data = poligono1, fill = NA, color = "yellow", size = .1) +
-    geom_sf(data = poligono2, fill = NA, color = "yellow", size = .1) +
-    coord_sf(xlim = c(-94, -87), ylim = c(-0.5, 4), crs = 4326) +
-    geom_tile(data = mapa,
-              aes(x = lon_bin, y = lat_bin, fill = hp, interpolate=TRUE), show.legend = TRUE) +
-    viridis::scale_fill_viridis(limits = c(0.1, 2),
-                     breaks=seq(0,2,by=.5),
-                     oob = scales::squish,
-                     na.value = NA) +
-    theme(
+  coord_sf(xlim = c(-85, -80), ylim = c(4, 8), crs = 4326) +
+  geom_tile(data = mapa %>% filter(!is.na(Flag), anio_carpeta < 2026),
+    aes(x = lon_bin, y = lat_bin, fill = hp),
+    width = 0.02,
+    height = 0.02,
+    show.legend = TRUE
+  ) +
+  viridis::scale_fill_viridis(
+    limits = c(0.1, 1.5),
+    breaks = seq(0, 1.5, by = .5),
+    oob = scales::squish,
+    na.value = NA
+  ) +
+  theme(
       axis.title = element_text(size = 9),
       axis.title.x = element_text(margin = margin(t = 4, unit = "pt")), 
       axis.text = element_text(size = 9),
@@ -552,192 +403,26 @@ gfw_map(theme = 'dark', res = 10, eezs = TRUE) +
       axis.text.y = element_text(size = 9),
       axis.ticks.y = element_line(color = "white"),
       strip.text = element_text(size = 9, face = "bold"),
-      legend.position = "bottom",  # Mostrar leyenda
-      legend.key.width = unit(0.6, "cm")
-      ) +
-  scale_x_continuous(breaks = seq(-94, -87, by = 3)) +
-  scale_y_continuous(breaks = seq(-0.5, 4, by = 2)) +
-    labs( x = "Longitud", y = "Latitud", fill = "Esfuerzo de pesca \n aparente (hr)" ) +
-    #facet_grid(Flag ~ anio_carpeta)
-    facet_wrap(~gear_es)
-```
-
-```{r fig.width=8.5, fig.height=9}
-mapa <- datos_finalesConArte %>% 
-          mutate(lat_bin = round(Lat, 2),
-                 lon_bin = round(Lon, 2)) %>% 
-  group_by(lat_bin, lon_bin, gear_es, anio_carpeta) %>% 
-  summarise(hp = sum(`Vessel Presence Hours`, na.rm=T)) %>% 
-  filter(gear_es != "Cerco")
-
-#for (year in 2020:2025)
-#{
-pp <- gfw_map(theme = 'dark', res = 10, eezs = TRUE) +
-    geom_sf(data = centro, fill = NA, color = "white", size = .1) +
-    geom_sf(data = poligono1, fill = NA, color = "yellow", size = .1) +
-    geom_sf(data = poligono2, fill = NA, color = "yellow", size = .1) +
-    coord_sf(xlim = c(-94, -87), ylim = c(-0.5, 4), crs = 4326) +
-    geom_tile(data = mapa, # %>% filter(anio_carpeta == year),
-              aes(x = lon_bin, y = lat_bin, fill = hp, interpolate=TRUE), show.legend = TRUE) +
-    viridis::scale_fill_viridis(limits = c(0.1, 1),
-                     breaks=seq(0,1,by=.5),
-                     oob = scales::squish,
-                     na.value = NA) +
-    theme(
-      axis.title = element_text(size = 9),
-      axis.title.x = element_text(margin = margin(t = 4, unit = "pt")), 
-      axis.text = element_text(size = 9),
-      axis.text.x = element_text(size = 9, angle = 45, hjust = 1),
-      axis.text.y = element_text(size = 9),
-      axis.ticks.y = element_line(color = "white"),
-      strip.text = element_text(size = 9, face = "bold"),
-      strip.text.y = element_text(margin = margin(l = 4, r = 4, unit = "pt")),
+      strip.text.y.left = element_text(angle = 0, hjust = 1, margin = margin(r = 4, unit = "pt")),
+      strip.placement = "outside",
       legend.position = "bottom",  # Mostrar leyenda
       legend.key.width = unit(0.6, "cm"),
-      plot.margin = margin(4, 8, 4, 8, unit = "pt")
+      plot.margin = margin(4, 4, 4, 12, unit = "pt")
       ) +
-  scale_x_continuous(breaks = seq(-94, -87, by = 3)) +
-  scale_y_continuous(breaks = seq(-0.5, 4, by = 2)) +
-    labs( x = "Longitud", y = "Latitud", fill = "Esfuerzo de pesca \n aparente (hr)" ) +
-    #ggtitle(year) +
-    facet_grid(anio_carpeta ~ gear_es)
-    #facet_wrap(~gear_es)
+  scale_x_continuous(breaks = seq(-85, -80, by = 2)) +
+  scale_y_continuous(breaks = seq(-4, 2, by = 2)) +
+  labs( x = "Longitud", y = "Latitud", fill = "Esfuerzo de pesca \n aparente (hr)" ) +
+    facet_wrap( ~ anio_carpeta)
 
-print(pp)
-#}
-
+#write.csv(mapa, file="~/Downloads/temp.csv")
 ```
-
-
-
-
-### AIS
+#### Horas y numero de barcos
 
 ```{r}
-datos_finales_ais <- cargar_datos(
-  carpetas_base = carpetas_base,
-  dataType = "layer-activity-data-0"
-)
-
-# Convertir tipos después de unir
-datos_finales_ais <- datos_finales_ais %>%
-  mutate(
-    Lat = readr::parse_number(Lat),
-    Lon = readr::parse_number(Lon),
-    `Vessel Presence Hours` = readr::parse_number(`Vessel Presence Hours`)
-  )
-
-```
-
-
-#### Ahora les agregarmos el poligono!
-
-```{r}
-pts <- st_as_sf(
-  datos_finales_ais,
-  coords = c("Lon", "Lat"),
-  crs = 4326   # cambia esto si tus coordenadas no están en WGS84
-)
-
-# 2) Unir ambos polígonos en un solo sf con una etiqueta
-polys <- bind_rows(
-  poligono1 %>% mutate(poligono = "geometry"),
-  poligono2 %>% mutate(poligono = "geometry")
-)
-
-# 3) Asegurar mismo CRS
-polys <- st_transform(polys, st_crs(pts))
-
-# 4) Evaluar pertenencia
-mat <- st_within(pts, polys, sparse = FALSE)
-
-# 5) Crear clasificación final
-pts$ubicacion <- case_when(
-  mat[, 1] ~ "dentro_poligono_1",
-  mat[, 2] ~ "dentro_poligono_2",
-  TRUE     ~ "fuera"
-)
-
-pts$ubicacion <- case_when(
-  mat[, 1] & !mat[, 2] ~ "poligono_1",
-  !mat[, 1] & mat[, 2] ~ "poligono_2",
-  mat[, 1] & mat[, 2]  ~ "ambos",
-  TRUE                 ~ "centro"
-)
-
-coords <- st_coordinates(pts)
-
-pts$Lon <- coords[, "X"]
-pts$Lat <- coords[, "Y"]
-
-#write.csv(pts, file="~/Downloads/temp.csv")
-
-```
-
-#### Tabla resumen de la actividad
-
-```{r}
-
-# Tabla resumen
-tabla_resumen <- pts %>%
-  st_drop_geometry() %>% 
-  mutate(
-    anio = as.integer(anio_carpeta),
-    poligono = ubicacion,
-    arte_pesca = `Gear Type`,
-    barco = `Vessel ID`
-  ) %>%
-  group_by(anio, poligono, arte_pesca) %>%
-  summarise(
-    n_barcos = n_distinct(barco),
-    horas_presencia = sum(`Vessel Presence Hours`, na.rm = TRUE),
-    .groups = "drop"
-  ) %>%
-  pivot_wider(
-    names_from = poligono,
-    values_from = c(n_barcos, horas_presencia),
-    values_fill = 0
-  )
-
-kable(tabla_resumen)
-
-```
-
-## Mapa de pesca aparente VMS
-
-
-```{r fig.width=7, fig.height=4.2}
-gfw_map(theme = 'dark', res = 10, eezs = TRUE) +
-    coord_sf(xlim = c(-94, -87), ylim = c(-0.5, 4), crs = 4326) +
-    geom_tile(data = mapa,
-              aes(x = lon_bin, y = lat_bin, fill = hp, interpolate=TRUE), show.legend = TRUE) +
-    viridis::scale_fill_viridis(limits = c(0.1, 2),
-                     breaks=seq(0,2,by=.5),
-                     oob = scales::squish,
-                     na.value = NA) +
-    theme(
-      axis.title = element_text(size = 9),
-      axis.title.x = element_text(margin = margin(t = 4, unit = "pt")), 
-      axis.text = element_text(size = 9),
-      axis.text.x = element_text(size = 9, angle = 45, hjust = 1),
-      axis.text.y = element_text(size = 9),
-      axis.ticks.y = element_line(color = "white"),
-      strip.text = element_text(size = 9, face = "bold"),
-      legend.position = "bottom",  # Mostrar leyenda
-      legend.key.width = unit(0.6, "cm")
-      ) +
-  scale_x_continuous(breaks = seq(-94, -87, by = 3)) +
-  scale_y_continuous(breaks = seq(-0.5, 4, by = 2)) +
-    labs( x = "Longitud", y = "Latitud", fill = "Esfuerzo de pesca \n aparente (hr)" ) +
-    #facet_grid(Flag ~ anio_carpeta)
-    facet_wrap(~gear_es)
-```
-
-```{r eval=F}
 
 datos_finales %>% 
           group_by(`Vessel ID`, Flag, anio_carpeta) %>% 
-          summarise(hp = sum(`Ve  `, na.rm=T)) %>% 
+          summarise(hp = sum(hp, na.rm=T)) %>% 
           group_by(anio_carpeta, Flag) %>% 
           summarise(hp = sum(hp, na.rm=T), n = n()) %>% 
   pivot_wider(
@@ -746,4 +431,374 @@ datos_finales %>%
     values_fill = 0
   ) %>%
   kable(format = "html", digits = 0)
+
 ```
+
+
+```{r}
+datos_temp <- datos_finales %>% 
+  mutate(
+    hp = parse_number(`Vessel Presence Hours`),
+    anio_carpeta = str_extract(`Time Range`, "^\\d{4}")
+  )
+
+columnas_anio <- sort(unique(datos_temp$anio_carpeta))
+tabla_barcos <- datos_temp %>% 
+  filter(Flag == "PAN") %>% 
+  group_by(`Vessel Name`, anio_carpeta) %>% 
+  summarise(
+    hp = sum(hp, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  pivot_wider(
+    names_from = anio_carpeta,
+    values_from = hp,
+    values_fill = 0
+  ) %>%
+  mutate(
+    hp_total = rowSums(across(all_of(columnas_anio)), na.rm = TRUE)
+  ) %>%
+  select(
+    `Vessel Name`,
+    all_of(columnas_anio),
+    hp_total
+  ) %>%
+  arrange(desc(hp_total), `Vessel Name`)
+tabla_barcos %>% 
+  kable(format = "html", digits = 0)
+```
+
+
+
+
+
+### AIS
+
+
+```{r eval=F}
+aFiltrar <- c("speed = '<2'",    "speed = '2-4'",   "speed = '4-6'")
+
+PresBySpeed <- data.frame()
+for (j in 2020:2025)
+{
+  for (i in aFiltrar)
+  {
+    dtempPres <- gfw_ais_presence(
+        spatial_resolution = "HIGH",
+        temporal_resolution = "DAILY",
+        group_by = "VESSEL_ID",
+        start_date = paste(j, "-01-01", sep = ""),
+        end_date = paste(j+1, "-01-01", sep = ""),
+        region = 555705293,
+        region_source = "MPA",
+        filter_by = i
+        )
+    if (dim(dtempPres)[1] == 0)
+    {
+      #dtempPres <- PresBySpeed[0,]
+      dtempPres <- data.frame(Lat = NA, Lon = NA, `Time Range` = NA, `Vessel ID` = NA, 
+                              Flag = NA, `Vessel Name` = NA, `Entry Timestamp` = NA,
+                              `Exit Timestamp` = NA, `Gear Type` = NA, `Vessel Type` = NA, 
+                              MMSI = NA, IMO = NA, CallSign = NA, 
+                              `First Transmission Date` = NA, `Last Transmission Date` = NA, 
+                              `Vessel Presence Hours` = NA)
+    }
+    dtempPres$SpeedCat <- i
+    dtempPres$Year <- j
+    dtempPres$Region <- "Cord. de Coiba" 
+    
+    PresBySpeed <- bind_rows(PresBySpeed, dtempPres)
+    print(paste("Year:", j, "SpeedCat:", i))
+    Sys.sleep(3)
+  }  
+  write.csv(PresBySpeed, file="../data/AOI/C_de_coiba/AIS_.csv")
+}
+```
+
+```{r}
+ais <- read.csv(file="../data/AOI/C_de_coiba/AIS_.csv")
+```
+
+```{r}
+mapaAIS <- ais %>% 
+          mutate(lat_bin = round(Lat, 2),
+                 lon_bin = round(Lon, 2)) %>% 
+  group_by(lat_bin, lon_bin, Year) %>% 
+  summarise(hp = sum(Vessel.Presence.Hours, na.rm=T))
+
+
+
+```
+
+```{r}
+gfw_map(theme = 'dark', res = 10, eezs = TRUE) +
+  coord_sf(xlim = c(-85, -80), ylim = c(4, 8), crs = 4326) +
+  geom_tile(data = mapaAIS %>% filter(Year < 2026),
+    aes(x = lon_bin, y = lat_bin, fill = hp),
+    width = 0.02,
+    height = 0.02,
+    show.legend = TRUE
+  ) +
+  viridis::scale_fill_viridis(
+    limits = c(0.1, 1.5),
+    breaks = seq(0, 1.5, by = .5),
+    oob = scales::squish,
+    na.value = NA
+  ) +
+  theme(
+      axis.title = element_text(size = 9),
+      axis.title.x = element_text(margin = margin(t = 4, unit = "pt")), 
+      axis.text = element_text(size = 9),
+      axis.text.x = element_text(size = 9, angle = 45, hjust = 1),
+      axis.text.y = element_text(size = 9),
+      axis.ticks.y = element_line(color = "white"),
+      strip.text = element_text(size = 9, face = "bold"),
+      strip.text.y.left = element_text(angle = 0, hjust = 1, margin = margin(r = 4, unit = "pt")),
+      strip.placement = "outside",
+      legend.position = "bottom",  # Mostrar leyenda
+      legend.key.width = unit(0.6, "cm"),
+      plot.margin = margin(4, 4, 4, 12, unit = "pt")
+      ) +
+  scale_x_continuous(breaks = seq(-85, -80, by = 2)) +
+  scale_y_continuous(breaks = seq(-4, 2, by = 2)) +
+  labs( x = "Longitud", y = "Latitud", fill = "Esfuerzo de pesca \n aparente (hr)" ) +
+    facet_wrap( ~ Year)
+```
+
+Número de embarcaciones
+
+```{r}
+mapaAIS <- ais %>% 
+          #mutate(lat_bin = round(Lat, 2),
+          #       lon_bin = round(Lon, 2)) %>% 
+  group_by(Year, Vessel.ID, Flag) %>% 
+  summarise(n = n()) %>% 
+  group_by(Year, Flag) %>% 
+  summarise(n = n())
+
+```
+
+
+
+## Isla Coiba
+
+### Presencia Nacional
+
+Leemos todos los datos VMS. Estos datos los sacamos desde la pagina web.
+
+```{r}
+ruta_base <- "../data/AOI/CoibaMontuoaHanibal/IslaCoiba_0a6nudos/"
+
+archivos_zip <- list.files(
+  path = ruta_base,
+  pattern = "\\.zip$",
+  full.names = TRUE
+)
+
+extraer_anio <- function(nombre_archivo) {
+  str_extract(
+    basename(nombre_archivo),
+    "\\d{4}(?=-01-01T)"
+  )
+}
+
+extraer_zona_archivo <- function(nombre_archivo) {
+  nombre <- tools::file_path_sans_ext(basename(nombre_archivo))
+  
+  zona <- str_extract(
+    nombre,
+    ".*(?= - \\d{4}-\\d{2}-\\d{2}T)"
+  )
+  
+  zona <- zona %>%
+    str_replace_all("_br__", " ") %>%
+    str_replace_all("NAME_\\s*", "") %>%
+    str_replace_all("DESIG_\\s*", "") %>%
+    str_squish()
+  
+  zona
+}
+
+leer_csv_seguro <- function(archivo, anio_zip, zona_zip, zip_origen) {
+  
+  datos <- tryCatch(
+    read_csv(
+      archivo,
+      col_types = cols(.default = col_character()),
+      show_col_types = FALSE,
+      progress = FALSE
+    ),
+    error = function(e) {
+      message("Error leyendo: ", basename(archivo), " -> ", e$message)
+      return(NULL)
+    }
+  )
+  
+  if (is.null(datos) || nrow(datos) == 0) {
+    return(NULL)
+  }
+  
+  datos %>%
+    mutate(
+      anio_carpeta = anio_zip,
+      zona_archivo = zona_zip,
+      archivo_origen = basename(archivo),
+      zip_origen = basename(zip_origen)
+    )
+}
+
+datos_finales <- map_dfr(archivos_zip, function(zip_file) {
+  
+  anio_zip <- extraer_anio(zip_file)
+  zona_zip <- extraer_zona_archivo(zip_file)
+  
+  temp_dir <- tempfile()
+  dir.create(temp_dir)
+  
+  unzip(zip_file, exdir = temp_dir)
+  
+  archivos_csv <- list.files(
+    path = temp_dir,
+    pattern = "\\.csv$",
+    full.names = TRUE,
+    recursive = TRUE
+  )
+  
+  if (length(archivos_csv) == 0) {
+    message("No hay CSV en: ", basename(zip_file))
+    return(NULL)
+  }
+  
+  map_dfr(
+    archivos_csv,
+    ~ leer_csv_seguro(
+      archivo = .x,
+      anio_zip = anio_zip,
+      zona_zip = zona_zip,
+      zip_origen = zip_file
+    )
+  )
+})
+
+datos_finales <- datos_finales %>%
+  mutate(
+    Lat = parse_number(Lat),
+    Lon = parse_number(Lon),
+    hp = parse_number(`Vessel Presence Hours`)
+  )
+```
+
+#### Mapa de prescencia flota nacional VMS
+
+```{r}
+
+mapa <- datos_finales %>% 
+          mutate(lat_bin = round(Lat, 2),
+                 lon_bin = round(Lon, 2)) %>% 
+  group_by(lat_bin, lon_bin, Flag, anio_carpeta, zona_archivo) %>% 
+  summarise(hp = sum(hp, na.rm=T))
+
+```
+
+```{r fig.width=8.5, fig.height=6.8}
+gfw_map(theme = 'dark', res = 10, eezs = TRUE) +
+  coord_sf(xlim = c(-82.5, -81), ylim = c(7, 8), crs = 4326) +
+  geom_tile(data = mapa %>% filter(!is.na(Flag), anio_carpeta < 2026),
+    aes(x = lon_bin, y = lat_bin, fill = hp),
+    width = 0.02,
+    height = 0.02,
+    show.legend = TRUE
+  ) +
+  viridis::scale_fill_viridis(
+    limits = c(0.1, 3),
+    breaks = seq(0, 3, by = .5),
+    oob = scales::squish,
+    na.value = NA
+  ) +
+  theme(
+      axis.title = element_text(size = 9),
+      axis.title.x = element_text(margin = margin(t = 4, unit = "pt")), 
+      axis.text = element_text(size = 9),
+      axis.text.x = element_text(size = 9, angle = 45, hjust = 1),
+      axis.text.y = element_text(size = 9),
+      axis.ticks.y = element_line(color = "white"),
+      strip.text = element_text(size = 9, face = "bold"),
+      strip.text.y.left = element_text(angle = 0, hjust = 1, margin = margin(r = 4, unit = "pt")),
+      strip.placement = "outside",
+      legend.position = "bottom",  # Mostrar leyenda
+      legend.key.width = unit(0.6, "cm"),
+      plot.margin = margin(4, 4, 4, 12, unit = "pt")
+      ) +
+  scale_x_continuous(breaks = seq(-82.5, -81, by = .5)) +
+  scale_y_continuous(breaks = seq(7, 8, by = .25)) +
+  labs( x = "Longitud", y = "Latitud", fill = "Esfuerzo de pesca \n aparente (hr)" ) +
+    facet_wrap( ~ anio_carpeta)
+
+#write.csv(mapa, file="~/Downloads/temp.csv")
+```
+#### Horas y numero de barcos
+
+```{r}
+
+datos_finales %>% filter(Flag == "PAN") %>% 
+          group_by(`Vessel ID`, anio_carpeta, zona_archivo) %>% 
+          summarise(hp = sum(hp, na.rm=T)) %>% 
+          group_by(anio_carpeta, zona_archivo) %>% 
+          summarise(hp = sum(hp, na.rm=T), n = n()) %>% 
+  pivot_wider(
+    names_from = zona_archivo,
+    values_from = c(hp, n),
+    values_fill = 0
+  ) %>%
+  kable(format = "html", digits = 0)
+
+```
+
+
+
+
+
+
+
+```{r}
+hacer_tabla_zona <- function(nombre_zona) {
+  
+  anios <- sort(unique(datos_finales$anio_carpeta))
+  
+  datos_finales %>% 
+    filter(
+      Flag == "PAN",
+      zona_archivo == nombre_zona
+    ) %>% 
+    group_by(`Vessel Name`, anio_carpeta) %>% 
+    summarise(
+      hp = sum(hp, na.rm = TRUE),
+      .groups = "drop"
+    ) %>%
+    pivot_wider(
+      names_from = anio_carpeta,
+      values_from = hp,
+      values_fill = 0
+    ) %>%
+    mutate(
+      hp_total = rowSums(across(where(is.numeric)), na.rm = TRUE)
+    ) %>%
+    select(
+      `Vessel Name`,
+      all_of(as.character(anios[as.character(anios) %in% names(.)])),
+      hp_total
+    ) %>%
+    arrange(desc(hp_total), `Vessel Name`)
+}
+tabla_coiba <- hacer_tabla_zona("Coiba Parque Nacional")
+write.csv(tabla_coiba, file="~/Downloads/coiba.csv")
+tabla_montuosa <- hacer_tabla_zona("Isla Montuosa y Banco Hannibal")
+write.csv(tabla_montuosa, file="~/Downloads/Montuosa_Hannibal.csv")
+
+tabla_coiba %>% 
+  kable(format = "html", digits = 0)
+
+tabla_montuosa %>% 
+  kable(format = "html", digits = 0)
+```
+

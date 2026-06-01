@@ -197,7 +197,9 @@ temp_total <- sar %>%
   
 temp <- temp_year %>% 
   left_join(temp_total, by = "Flag") %>% 
-  arrange(desc(8423)) %>% 
+  arrange(desc(.[[11]])) %>% 
+  rename(Total = 11) %>% 
+  #filter(!is.na(Flag)) %>% 
   mutate(
     Flag = countrycode::countrycode(
       Flag,

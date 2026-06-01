@@ -919,16 +919,17 @@ figura_final
 
 ```{r}
 top10_puertos <- portVisits %>% 
+  filter(!is.na(puerto)) %>% 
   count(puerto, sort = TRUE) %>% 
   slice_head(n = 10) %>% 
   pull(puerto)
 
 portVisits %>% 
   filter(puerto %in% top10_puertos) %>% 
-  group_by(year, area_nombre, puerto) %>% 
+  group_by(year, pais, puerto) %>% 
   summarise(n = n(), .groups = "drop") %>% 
   pivot_wider(
-    names_from = c(area_nombre, puerto),
+    names_from = c(pais, puerto),
     values_from = n,
     values_fill = 0
   ) %>% 

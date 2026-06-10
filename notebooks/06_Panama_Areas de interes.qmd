@@ -113,169 +113,7 @@ ylimites = c(4, 13)
 
 ## Cordillera de Coiba
 
-### Presencia Nacional
-
-Leemos todos los datos VMS. Estos datos los sacamos desde la pagina web.
-
-```{r}
-ruta_base <- "../data/AOI/C_de_coiba/Pres_Nacional/"
-archivos_zip <- list.files(
-  path = ruta_base,
-  pattern = "\\.zip$",
-  full.names = TRUE
-)
-
-extraer_anio <- function(nombre_archivo) {
-  str_extract(
-    basename(nombre_archivo),
-    "\\d{4}(?=-01-01T)"
-  )
-}
-
-extraer_pais_archivo <- function(nombre_archivo) {
-  nombre <- tools::file_path_sans_ext(basename(nombre_archivo)) |> 
-    tolower()
-  if (str_detect(nombre, "^public-vms-")) {
-    str_extract(nombre, "(?<=^public-vms-)[^-]+")
-  } else if (str_detect(nombre, "^public-")) {
-    str_extract(nombre, "(?<=^public-)[^-]+")
-  } else {
-    NA_character_
-  }
-}
-
-leer_csv_seguro <- function(archivo, anio_zip, zip_origen) {
-  datos <- tryCatch(
-    read_csv(
-      archivo,
-      col_types = cols(.default = col_character()),
-      show_col_types = FALSE,
-      progress = FALSE
-    ),
-    error = function(e) {
-      message("Error leyendo: ", basename(archivo), " -> ", e$message)
-      return(NULL)
-    }
-  )
-
-  if (is.null(datos) || nrow(datos) == 0) {
-    return(NULL)
-  }
-
-  datos %>%
-    mutate(
-      anio_carpeta = anio_zip,
-      pais_archivo = extraer_pais_archivo(archivo),
-      archivo_origen = basename(archivo),
-      zip_origen = basename(zip_origen)
-    )
-}
-
-datos_finales <- map_dfr(archivos_zip, function(zip_file) {
-  anio_zip <- extraer_anio(zip_file)
-  temp_dir <- tempfile()
-  dir.create(temp_dir)
-  unzip(zip_file, exdir = temp_dir)
-  archivos_csv <- list.files(
-    path = temp_dir,
-    pattern = "\\.csv$",
-    full.names = TRUE,
-    recursive = TRUE
-  )
-
-  if (length(archivos_csv) == 0) {
-    message("No hay CSV en: ", basename(zip_file))
-    return(NULL)
-  }
-
-  map_dfr(
-    archivos_csv,
-    ~ leer_csv_seguro(
-      archivo = .x,
-      anio_zip = anio_zip,
-      zip_origen = zip_file
-    )
-  )
-})
-
-datos_finales <- datos_finales %>%
-  mutate(
-    Lat = parse_number(Lat),
-    Lon = parse_number(Lon),
-    `hp` = parse_number(`Vessel Presence Hours`)
-  )
-```
-
-#### Mapa de prescencia flota nacional VMS
-
-```{r}
-
-mapa <- datos_finales %>% 
-          mutate(lat_bin = round(Lat, 2),
-                 lon_bin = round(Lon, 2)) %>% 
-  group_by(lat_bin, lon_bin, Flag, anio_carpeta) %>% 
-  summarise(hp = sum(hp, na.rm=T))
-
-```
-
-```{r fig.width=8.5, fig.height=6.8}
-gfw_map(theme = 'dark', res = 10, eezs = TRUE) +
-  coord_sf(xlim = c(-85, -80), ylim = c(4, 8), crs = 4326) +
-  geom_tile(data = mapa %>% filter(!is.na(Flag), anio_carpeta < 2026),
-    aes(x = lon_bin, y = lat_bin, fill = hp),
-    width = 0.02,
-    height = 0.02,
-    show.legend = TRUE
-  ) +
-  viridis::scale_fill_viridis(
-    limits = c(0.1, 2),
-    breaks = seq(0, .5, by = .25),
-    oob = scales::squish,
-    na.value = NA
-  ) +
-  theme(
-      axis.title = element_text(size = 9),
-      axis.title.x = element_text(margin = margin(t = 4, unit = "pt")), 
-      axis.text = element_text(size = 9),
-      axis.text.x = element_text(size = 9, angle = 45, hjust = 1),
-      axis.text.y = element_text(size = 9),
-      axis.ticks.y = element_line(color = "white"),
-      strip.text = element_text(size = 9, face = "bold"),
-      strip.text.y.left = element_text(angle = 0, hjust = 1, margin = margin(r = 4, unit = "pt")),
-      strip.placement = "outside",
-      legend.position = "bottom",  # Mostrar leyenda
-      legend.key.width = unit(0.6, "cm"),
-      plot.margin = margin(4, 4, 4, 12, unit = "pt")
-      ) +
-  scale_x_continuous(breaks = seq(-85, -80, by = 2)) +
-  scale_y_continuous(breaks = seq(-4, 2, by = 2)) +
-  labs( x = "Longitud", y = "Latitud", fill = "Esfuerzo de pesca \n aparente (hr)" ) +
-    facet_wrap( ~ anio_carpeta)
-
-#write.csv(mapa, file="~/Downloads/temp.csv")
-```
-#### Horas y numero de barcos
-
-```{r}
-
-datos_finales %>% 
-          group_by(`Vessel ID`, Flag, anio_carpeta) %>% 
-          summarise(hp = sum(hp, na.rm=T)) %>% 
-          group_by(anio_carpeta, Flag) %>% 
-          summarise(hp = sum(hp, na.rm=T), n = n()) %>% 
-  pivot_wider(
-    names_from = Flag,
-    values_from = c(hp, n),
-    values_fill = 0
-  ) %>%
-  kable(format = "html", digits = 0)
-
-```
-
-
-
-
-### Presencia Nacional < 6mn
+### Presencia < 6mn
 
 Leemos todos los datos VMS. Estos datos los sacamos desde la pagina web.
 
@@ -411,7 +249,7 @@ gfw_map(theme = 'dark', res = 10, eezs = TRUE) +
       ) +
   scale_x_continuous(breaks = seq(-85, -80, by = 2)) +
   scale_y_continuous(breaks = seq(-4, 2, by = 2)) +
-  labs( x = "Longitud", y = "Latitud", fill = "Esfuerzo de pesca \n aparente (hr)" ) +
+  labs( x = "Longitud", y = "Latitud", fill = "Presencia (hr)" ) +
     facet_wrap( ~ anio_carpeta)
 
 #write.csv(mapa, file="~/Downloads/temp.csv")
@@ -467,8 +305,6 @@ tabla_barcos <- datos_temp %>%
 tabla_barcos %>% 
   kable(format = "html", digits = 0)
 ```
-
-
 
 
 
@@ -731,7 +567,7 @@ gfw_map(theme = 'dark', res = 10, eezs = TRUE) +
       ) +
   scale_x_continuous(breaks = seq(-82.5, -81, by = .5)) +
   scale_y_continuous(breaks = seq(7, 8, by = .25)) +
-  labs( x = "Longitud", y = "Latitud", fill = "Esfuerzo de pesca \n aparente (hr)" ) +
+  labs( x = "Longitud", y = "Latitud", fill = "Presencia (hr)" ) +
     facet_wrap( ~ anio_carpeta)
 
 #write.csv(mapa, file="~/Downloads/temp.csv")

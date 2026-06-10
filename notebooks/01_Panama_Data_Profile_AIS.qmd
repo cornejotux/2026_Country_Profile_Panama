@@ -594,6 +594,67 @@ write.csv(temp, file="~/Downloads/temp.csv")
 
 ## Solo pesqueros
 
+### Lista de cerqueros para Gabriel
+
+```{r}
+cerquerosPanama <- dataAllEEZ_fh %>% 
+          filter(id %in% c(8423),
+                `Vessel Type` == "FISHING",
+                `Gear Type` %in% c("OTHER_SEINES", "TUNA_PURSE_SEINES",
+                                   "OTHER_PURSE_SEINES")) %>% 
+          group_by(year, Flag, `Vessel Name`, `Gear Type`) %>% 
+          summarise(fh = sum(`Apparent Fishing Hours`, na.rm=T))
+
+write.csv(cerquerosPanama, file="~/Downloads/cerquerosPanama.csv")
+
+canaYLineaPanama <- dataAllEEZ_fh %>% 
+          filter(id %in% c(8423),
+                `Vessel Type` == "FISHING",
+                `Gear Type` %in% c("POLE_AND_LINE")) %>% 
+          group_by(year, Flag, `Vessel Name`, `Gear Type`) %>% 
+          summarise(fh = sum(`Apparent Fishing Hours`, na.rm=T))
+
+write.csv(canaYLineaPanama, file="~/Downloads/canaYLineaPanama.csv")
+
+gear_translation <- c(
+  "TRAWLERS"            = "Arrastreros",
+  "INCONCLUSIVE"        = "No concluyente",
+  "FISHING"             = "Pesca (sin clasificación)",
+  "DRIFTING_LONGLINES"  = "Palangre de deriva",
+  "OTHER_SEINES"        = "Otras redes de cerco",
+  "TUNA_PURSE_SEINES"   = "Cerco de atún",
+  "SET_LONGLINES"       = "Palangre fijo",
+  "POLE_AND_LINE"       = "Caña y línea",
+  "FIXED_GEAR"          = "Artes fijos",
+  "OTHER_PURSE_SEINES"  = "Otros cercos",
+  "GEAR"                = "Arte de pesca"
+)
+
+pesquerosEnPanama <- dataAllEEZ_fh %>% 
+  filter(
+    id %in% c(8423),
+    `Vessel Type` == "FISHING"
+  ) %>% 
+  mutate(
+    Pais = countrycode::countrycode(
+      Flag,
+      origin = "iso3c",
+      destination = "cldr.short.es"
+    ),
+    ArtePesca = recode(`Gear Type`, !!!gear_translation)
+  ) %>% 
+  group_by(Pais, `Vessel Name`, ArtePesca) %>% 
+  summarise(
+    HorasPescaAparente = sum(`Apparent Fishing Hours`, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+write.csv(pesquerosEnPanama, file="~/Downloads/temp.csv")
+```
+
+
+
+
 ```{r with = 12}
 nConEsfuerzoPesqueros <- dataAllEEZ_fh %>% 
           filter(id %in% c(8423),

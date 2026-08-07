@@ -302,8 +302,11 @@ tabla_barcos <- datos_temp %>%
     hp_total
   ) %>%
   arrange(desc(hp_total), `Vessel Name`)
+
 tabla_barcos %>% 
   kable(format = "html", digits = 0)
+
+write.csv(tabla_barcos, file="~/Downloads/barcos_cord_coiba.csv")
 ```
 
 

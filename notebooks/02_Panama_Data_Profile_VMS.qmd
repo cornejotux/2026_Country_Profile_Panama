@@ -125,7 +125,7 @@ SELECT
   EXTRACT(HOUR FROM timestamp) AS hora_del_dia,
   EXTRACT(YEAR FROM timestamp) AS year,
   COUNT(*) AS numero_posiciones
-FROM `world-fishing-827.scratch_JorgeCornejo.202605_Panama_vmsPositions`
+FROM `world-fishing-827.scratch_JorgeCornejo.202608_Panama_vmsPositions`
 GROUP BY year, hora_del_dia
 ORDER BY year, hora_del_dia
 "
@@ -142,7 +142,7 @@ query <- "
 SELECT 
   FLOOR(speed_knots) AS velocidad_bin,
   COUNT(*) AS numero_posiciones
-FROM `world-fishing-827.scratch_JorgeCornejo.202605_Panama_vmsPositions`
+FROM `world-fishing-827.scratch_JorgeCornejo.202608_Panama_vmsPositions`
 GROUP BY velocidad_bin
 ORDER BY velocidad_bin
 "
@@ -161,7 +161,7 @@ query <- "
 SELECT 
   DATE(timestamp) AS fecha,
   COUNT(*) AS numero_posiciones
-FROM `world-fishing-827.scratch_JorgeCornejo.202605_Panama_vmsPositions`
+FROM `world-fishing-827.scratch_JorgeCornejo.202608_Panama_vmsPositions`
 GROUP BY fecha
 ORDER BY fecha"
 
@@ -178,9 +178,9 @@ write_csv(posiciones_por_fecha, "../data/panama_vms_posiciones_por_fecha.csv")
 query <- "
 SELECT
   EXTRACT(YEAR FROM timestamp) AS anio,
-  core_geartype, source_fleet,
+  core_geartype, source_fleet, best_vessel_class
   COUNT(DISTINCT ssvid) AS numero_barcos
-FROM `world-fishing-827.scratch_JorgeCornejo.202605_Panama_vmsPositions`
+FROM `world-fishing-827.scratch_JorgeCornejo.202608_Panama_vmsPositions`
 WHERE ssvid IS NOT NULL
 GROUP BY anio, core_geartype, source_fleet
 ORDER BY anio, core_geartype, source_fleet"
@@ -194,21 +194,44 @@ write_csv(barcos_por_anio_arte, "../data/panama_vms_barcos_por_anio_arte.csv")
 
 ### Ahora sacamos las horas por pixel espacial
 query <- "
-WITH minutos_por_celda AS (
+WITH datos_filtrados AS (
+  SELECT *, EXTRACT(YEAR FROM timestamp) AS anio
+  FROM `world-fishing-827.scratch_JorgeCornejo.202608_Panama_vmsPositions`
+  WHERE nnet_score > 0.5 #and prod_shiptype = 'FISHING'
+  ),
+
+barcos_validos AS (
+  SELECT anio, ssvid 
+  FROM datos_filtrados
+  WHERE ssvid IS NOT NULL
+  GROUP BY anio, ssvid
+  HAVING COUNT(*) >= 5
+),
+
+datos_con_celdas AS (
   SELECT
-    EXTRACT(YEAR FROM timestamp) AS anio,
-    core_geartype, source_fleet,
-    FLOOR(lat * 100) / 100 AS lat_0_01,
-    FLOOR(lon * 100) / 100 AS lon_0_01,
-    COUNT(DISTINCT TIMESTAMP_TRUNC(timestamp, MINUTE)) AS minutos
-  FROM `world-fishing-827.scratch_JorgeCornejo.202605_Panama_vmsPositions`
-  WHERE nnet_score > 0.5
-  GROUP BY anio, core_geartype, source_fleet, lat_0_01, lon_0_01
+    d.*,
+    FLOOR(d.lat * 100) / 100 AS lat_0_01,
+    FLOOR(d.lon * 100) / 100 AS lon_0_01
+  FROM datos_filtrados AS d
+  INNER JOIN barcos_validos AS b
+    ON d.ssvid = b.ssvid
+   AND d.anio = b.anio
+  WHERE d.lat IS NOT NULL
+    AND d.lon IS NOT NULL
+),
+
+horas_por_celda AS (
+  SELECT anio, source_fleet, core_geartype, lat_0_01, lon_0_01, SUM(hours) AS horas
+  FROM datos_con_celdas
+  GROUP BY anio, source_fleet, core_geartype, lat_0_01, lon_0_01
 )
 
-SELECT anio, core_geartype, source_fleet, lat_0_01, lon_0_01, minutos / 60.0 AS horas
-FROM minutos_por_celda
-ORDER BY anio, core_geartype, source_fleet, lat_0_01, lon_0_01"
+SELECT
+  anio, source_fleet, core_geartype, lat_0_01, lon_0_01, horas
+FROM horas_por_celda
+ORDER BY
+  anio, core_geartype, lat_0_01, lon_0_01;"
 
 horas_por_pixel_espacial <- bq_project_query(
   project_id,
@@ -228,7 +251,7 @@ WITH minutos_por_celda AS (
     FLOOR(lat * 100) / 100 AS lat_0_01,
     FLOOR(lon * 100) / 100 AS lon_0_01,
     COUNT(DISTINCT TIMESTAMP_TRUNC(timestamp, MINUTE)) AS minutos
-  FROM `world-fishing-827.scratch_JorgeCornejo.202605_Panama_vmsPositions`
+  FROM `world-fishing-827.scratch_JorgeCornejo.202608_Panama_vmsPositions`
   WHERE speed_knots >= 0.1
     AND speed_knots <= 5
   GROUP BY anio, core_geartype, source_fleet, lat_0_01, lon_0_01
@@ -262,7 +285,7 @@ raster_speed <- read.csv(file="../data/panama_vms_horas_por_pixel_velocidad_0_1_
 # Histograma de posiciones por hora
 
 ```{r fig.height=7.2}
-ggplot(nPosYearHour %>% filter(year < 2026), aes(x = hora_del_dia, y = numero_posiciones/1000000)) +
+ggplot(nPosYearHour %>% filter(year < 2026), aes(x = hora_del_dia, y = numero_posiciones/1000)) +
   geom_col(width = 1, 
            #col=gfw_palettes$primary[1],
            fill=gfw_palettes$primary[1], alpha=.6) +
@@ -270,7 +293,7 @@ ggplot(nPosYearHour %>% filter(year < 2026), aes(x = hora_del_dia, y = numero_po
   scale_x_continuous(breaks = seq(0, 23, 3)) +
   labs(
     x = "Hora del día",
-    y = "Número de observaciones (x1.000.000)"
+    y = "Número de observaciones (x1.000)"
   ) 
 ```
 
@@ -540,7 +563,7 @@ gfw_map(theme = "dark", res = 10, eezs = TRUE) +
   coord_sf(xlim = xlimites, ylim = ylimites, crs = 4326, expand = FALSE) +
   geom_tile(data = mapa_arte, aes(lon_0_01, lat_0_01, fill = fe)) +
   viridis::scale_fill_viridis(
-    limits = c(0.1, 2), breaks = seq(0, 2, 0.5),
+    limits = c(0.1, 5), breaks = seq(0, 5, 1),
     oob = scales::squish, na.value = NA
   ) +
   labs(x = "Longitud", y = "Latitud", fill = "Esfuerzo de pesca \n aparente (hr)") +

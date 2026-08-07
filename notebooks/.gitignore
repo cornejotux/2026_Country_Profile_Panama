@@ -1,3 +1,5 @@
 *.html
 *_cache
 *_files
+.DS_Store
+04_Panama_Data_Profile_Eventos_VMS.rmarkdown

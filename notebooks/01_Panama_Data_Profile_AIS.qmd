@@ -1365,6 +1365,137 @@ gfw_map(theme = 'dark', res = 10, eezs = TRUE) +
 ```
 
 
+
+### Mapas mensuales: Solicitud de Gabriel
+
+```{r}
+
+MonthDinamics <- dataAllEEZ_fh %>% 
+                  mutate(arte = case_when(
+                    `Gear Type` == "TUNA_PURSE_SEINES" ~ "Cerco de atún",
+                    `Gear Type` == "TRAWLERS" ~ "Arrastre",
+                    `Gear Type` == "POLE_AND_LINE" ~ "Caña y línea",
+                    `Gear Type` == "SQUID_JIGGER" ~ "Poteras",
+                    `Gear Type` %in% c("OTHER_PURSE_SEINES", "PURSE_SEINES") ~ "Cerquero",
+                    `Gear Type` == "POTS_AND_TRAPS" ~ "Trampas",
+                    `Gear Type` %in% c("SET_LONGLINES", "DRIFTING_LONGLINES") ~ "Palangre",
+                    `Gear Type` == "FISHING" ~ "Otros pesqueros",
+                    TRUE ~ "Otros pesqueros"
+                  )) %>% 
+                  filter(arte %in% c("Palangre", "Cerco de atún", "Otros pesqueros",
+                                     "Cerquero", "Arrastre", "Caña y línea"),
+                        year >= 2025) %>% 
+                  mutate(arte = factor(arte, levels = sort(unique(arte)))) %>% 
+                  group_by(Lat = round(Lat, 1), Lon = round(Lon, 1), arte, `Time Range`) %>% 
+                  summarise(fe = sum(`Apparent Fishing Hours`, na.rm=T)) %>% 
+                  mutate(anio = substr(`Time Range`, 1, 4),
+                         mes_num = as.integer(substr(`Time Range`, 6, 7)),
+                         semestre = ifelse(mes_num <= 6, "Ene-Jun", "Jul-Dic"),
+                         mes = factor(month.abb[mes_num],levels = month.abb)) %>% 
+                  mutate(
+                    anio = substr(`Time Range`, 1, 4),
+                    mes = factor( substr(`Time Range`, 6, 7),
+                                  levels = sprintf("%02d", 1:12),
+                                  labels = c("Ene","Feb","Mar","Abr","May","Jun",
+                                             "Jul","Ago","Sep","Oct","Nov","Dic"))) %>%
+                complete(anio, mes)
+
+```
+
+
+```{r}
+
+gfw_map(theme = 'dark', res = 10, eezs = TRUE) +
+      #geom_sf(data = amp_panama, col = "white",   linewidth = 0.05, #gfw_palettes$primary[1], 
+       #     fill = gfw_palettes$primary[1], alpha = 0) +
+    coord_sf(xlim = xlimites, ylim = ylimites, crs = 4326) +
+    geom_tile(data = MonthDinamics %>% filter(arte == "Arrastre"),
+              aes(x = Lon, y = Lat, fill = fe, interpolate=TRUE), show.legend = TRUE) +
+    viridis::scale_fill_viridis(limits = c(0.1, 1),
+                     breaks=seq(0,1,by=.25),
+                     oob = scales::squish,
+                     na.value = NA) +
+    theme(
+      axis.title = element_text(size = 9),
+      axis.title.x = element_text(margin = margin(t = 4, unit = "pt")), 
+      axis.text = element_text(size = 9),
+      axis.text.x = element_text(size = 9, angle = 45, hjust = 1),
+      axis.text.y = element_text(size = 9),
+      axis.ticks.y = element_line(color = "white"),
+      strip.text = element_text(size = 9, face = "bold"),
+      legend.position = "right",  # Mostrar leyenda
+      legend.key.width = unit(0.3, "cm")
+      ) +
+    ggtitle("Arrastre") +
+    labs( x = "Longitud", y = "Latitud", fill = "Esfuerzo de pesca \n aparente (hr)" ) +
+    facet_wrap(vars(mes))
+
+
+
+
+gfw_map(theme = 'dark', res = 10, eezs = TRUE) +
+      #geom_sf(data = amp_panama, col = "white",   linewidth = 0.05, #gfw_palettes$primary[1], 
+       #     fill = gfw_palettes$primary[1], alpha = 0) +
+    coord_sf(xlim = xlimites, ylim = ylimites, crs = 4326) +
+    geom_tile(data = MonthDinamics %>% filter(arte == "Palangre"),
+              aes(x = Lon, y = Lat, fill = fe, interpolate=TRUE), show.legend = TRUE) +
+    viridis::scale_fill_viridis(limits = c(0.1, 1),
+                     breaks=seq(0,1,by=.25),
+                     oob = scales::squish,
+                     na.value = NA) +
+    theme(
+      axis.title = element_text(size = 9),
+      axis.title.x = element_text(margin = margin(t = 4, unit = "pt")), 
+      axis.text = element_text(size = 9),
+      axis.text.x = element_text(size = 9, angle = 45, hjust = 1),
+      axis.text.y = element_text(size = 9),
+      axis.ticks.y = element_line(color = "white"),
+      strip.text = element_text(size = 9, face = "bold"),
+      legend.position = "right",  # Mostrar leyenda
+      legend.key.width = unit(0.3, "cm")
+      ) +
+    ggtitle("Palangre") +
+    labs( x = "Longitud", y = "Latitud", fill = "Esfuerzo de pesca \n aparente (hr)" ) +
+    facet_wrap(vars(mes))
+
+
+
+
+gfw_map(theme = 'dark', res = 10, eezs = TRUE) +
+      #geom_sf(data = amp_panama, col = "white",   linewidth = 0.05, #gfw_palettes$primary[1], 
+       #     fill = gfw_palettes$primary[1], alpha = 0) +
+    coord_sf(xlim = xlimites, ylim = ylimites, crs = 4326) +
+    geom_tile(data = MonthDinamics %>% filter(arte == "Cerco de atún"),
+              aes(x = Lon, y = Lat, fill = fe, interpolate=TRUE), show.legend = TRUE) +
+    viridis::scale_fill_viridis(limits = c(0.1, 1),
+                     breaks=seq(0,1,by=.25),
+                     oob = scales::squish,
+                     na.value = NA) +
+    theme(
+      axis.title = element_text(size = 9),
+      axis.title.x = element_text(margin = margin(t = 4, unit = "pt")), 
+      axis.text = element_text(size = 9),
+      axis.text.x = element_text(size = 9, angle = 45, hjust = 1),
+      axis.text.y = element_text(size = 9),
+      axis.ticks.y = element_line(color = "white"),
+      strip.text = element_text(size = 9, face = "bold"),
+      legend.position = "right",  # Mostrar leyenda
+      legend.key.width = unit(0.3, "cm")
+      ) +
+    ggtitle("Cerco de Atún") +
+    labs( x = "Longitud", y = "Latitud", fill = "Esfuerzo de pesca \n aparente (hr)" ) +
+    facet_wrap(vars(mes))
+
+
+```
+
+
+
+
+
+
+
+
 ### Cerco de atun por año
 
 ```{r cache = FALSE}
